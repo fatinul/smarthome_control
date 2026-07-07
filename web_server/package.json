@@ -1,0 +1,14 @@
+{
+  "name": "cctv-web-server",
+  "version": "1.0.0",
+  "description": "Web server to display go2rtc camera footages",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.0",
+    "ejs": "^3.1.10",
+    "express": "^4.21.0"
+  }
+}

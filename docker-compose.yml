@@ -59,5 +59,10 @@ services:
     restart: unless-stopped
     networks:
       - cctv_network
+    ports:
+      - "3000:3000"
+    environment:
+      GO2RTC_HOST: "frigate"
+      GO2RTC_PORT: "1984"
     depends_on:
       - frigate
