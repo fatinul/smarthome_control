@@ -1,0 +1,59 @@
+mqtt:
+  enabled: false
+
+go2rtc:
+  streams:
+    cam_235:
+      - rtsp://admin:Flink0164199907@192.168.100.235:554/Preview_01_main
+    cam_106:
+      - rtsp://admin:Flink0164199907@192.168.100.106:554/Preview_01_main
+
+cameras:
+  camera_235:
+    enabled: true
+    ffmpeg:
+      # ==========================================
+      # GPU ACCELERATION SELECTION (Cam 235)
+      # ==========================================
+      # --- For Intel or AMD GPUs ---
+      # hwaccel_args: preset-vaapi
+      # --- For Nvidia GPUs (Uncomment line below and comment line above) ---
+      hwaccel_args: preset-nvidia
+
+      output_args:
+        record: preset-record-generic-audio-copy # Prevents CPU audio transcoding spikes
+      inputs:
+        - path: rtsp://127.0.0.1:8554/cam_235
+          input_args: preset-rtsp-restream
+          roles:
+            - detect
+            - record
+    detect:
+      enabled: true
+    record:
+      enabled: true
+
+  camera_106:
+    enabled: true
+    ffmpeg:
+      # ==========================================
+      # GPU ACCELERATION SELECTION (Cam 106)
+      # ==========================================
+      # --- For Intel or AMD GPUs ---
+      # hwaccel_args: preset-vaapi
+      # --- For Nvidia GPUs (Uncomment line below and comment line above) ---
+      hwaccel_args: preset-nvidia
+
+      output_args:
+        record: preset-record-generic-audio-copy
+      inputs:
+        - path: rtsp://127.0.0.1:8554/cam_106
+          input_args: preset-rtsp-restream
+          roles:
+            - detect
+            - record
+    detect:
+      enabled: true
+    record:
+      enabled: true
+version: 0.17-0

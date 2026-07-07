@@ -1,0 +1,63 @@
+networks:
+  cctv_network:
+    driver: bridge
+
+services:
+  frigate:
+    container_name: frigate
+    restart: unless-stopped
+    networks:
+      - cctv_network
+    
+    # ==========================================
+    # GPU IMAGE SELECTION
+    # ==========================================
+    # --- For Intel or AMD GPUs ---
+    # image: ghcr.io/blakeblackshear/frigate:stable
+    
+    # --- For Nvidia GPUs ---
+    image: ghcr.io/blakeblackshear/frigate:stable-tensorrt
+
+    privileged: true
+    shm_size: "512mb"   # <-- add this, bump higher if you have high-res streams
+    
+    # ==========================================
+    # GPU DEVICE ALLOCATION
+    # ==========================================
+    # --- For Intel or AMD GPUs ---
+    # devices:
+    #   - /dev/dri/renderD128:/dev/dri/renderD128
+
+    # --- For Nvidia GPUs (Uncomment lines below if using Nvidia) ---
+    deploy:
+      resources:
+        reservations:
+          devices:
+                - driver: nvidia
+                  count: all
+                  capabilities: [gpu]
+
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./config.yml:/config/config.yml
+      - ./storage:/media/frigate
+      - type: tmpfs
+        target: /tmp/cache
+        tmpfs:
+          size: 1000000000 # 1GB RAM cache to minimize drive wear
+    ports:
+      - "5000:5000"       # Frigate WebUI
+      - "1984:1984"       # go2rtc WebUI / API
+      - "8555:8555/tcp"   # WebRTC Peer
+      - "8555:8555/udp"   # WebRTC Peer
+    environment:
+      FRIGATE_RTSP_PASSWORD: "password"
+
+  node_app:
+    build: ./web_server
+    container_name: cctv-app
+    restart: unless-stopped
+    networks:
+      - cctv_network
+    depends_on:
+      - frigate
