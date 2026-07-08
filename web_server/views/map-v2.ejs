@@ -272,9 +272,31 @@
       walls: [], drawing: null, idCounter: 0,
     };
 
+    // Rect drag state
+    let rectStart = null;
+    let rectDragging = false;
+    let deleteDragging = false;
     // Konva
     let stage = null;
     const layers = {};
+
+    function rectIntersectsSegment(rx1, ry1, rx2, ry2, ax, ay, bx, by) {
+      if (ax >= rx1 && ax <= rx2 && ay >= ry1 && ay <= ry2) return true;
+      if (bx >= rx1 && bx <= rx2 && by >= ry1 && by <= ry2) return true;
+      const r = closestOnSegment((rx1 + rx2) / 2, (ry1 + ry2) / 2, ax, ay, bx, by);
+      if (r.x >= rx1 && r.x <= rx2 && r.y >= ry1 && r.y <= ry2) return true;
+      return !(rx1 > Math.max(ax, bx) || rx2 < Math.min(ax, bx) || ry1 > Math.max(ay, by) || ry2 < Math.min(ay, by));
+    }
+
+    function deleteWall(wall) {
+      wall.line.destroy();
+      wall.dots.forEach(d => d.destroy());
+      const idx = wallState.walls.indexOf(wall);
+      if (idx !== -1) wallState.walls.splice(idx, 1);
+      layers.wall.batchDraw();
+      updateInfo();
+      saveStatus.textContent = 'unsaved changes';
+    }
 
     // ─── Konva init ──────────────────────────────────────────────────────
     function initStage() {
@@ -308,8 +330,8 @@
       for (let y = -step * 5; y <= h + step * 5; y += step) {
         (y % (step * 5) === 0 ? majP : minP).push(-step * 5, y, w + step * 5, y);
       }
-      layers.grid.add(new Konva.Line({ points: minP, stroke: 'rgba(255,255,255,0.03)', strokeWidth: 1 }));
-      layers.grid.add(new Konva.Line({ points: majP, stroke: 'rgba(255,255,255,0.06)', strokeWidth: 1 }));
+      layers.grid.add(new Konva.Line({ points: minP, stroke: 'rgba(255,255,255,0.03)', strokeWidth: 1, listening: false }));
+      layers.grid.add(new Konva.Line({ points: majP, stroke: 'rgba(255,255,255,0.06)', strokeWidth: 1, listening: false }));
       layers.grid.batchDraw();
     }
 
@@ -371,6 +393,7 @@
         lineCap: 'round', lineJoin: 'round',
         perfectDrawEnabled: false,
       });
+      line.setAttr('dataType', 'wall');
       line.on('mouseenter', () => { if (activeTool === 'wall') line.stroke('#9298f0'); layers.wall.batchDraw(); });
       line.on('mouseleave', () => { line.stroke('#e2e2ec'); layers.wall.batchDraw(); });
       return line;
@@ -500,7 +523,7 @@
       const g = new Konva.Group();
       const color = constrained ? '#818cf8' : 'rgba(255,255,255,0.35)';
       g.add(new Konva.Line({ points: [from.x, from.y, to.x, to.y], stroke: color, strokeWidth: 2, dash: constrained ? [] : [5, 4], lineCap: 'round', perfectDrawEnabled: false }));
-      if (!constrained && dist(from, to) > 2) {
+      if (dist(from, to) > 2) {
         const len = dist(from, to), lp = perpOffset(from, to, 18);
         const txt = new Konva.Text({ x: lp.x, y: lp.y, text: formatLen(len), fontSize: 11, fontFamily: 'monospace', fill: 'rgba(255,255,255,0.8)', align: 'center', perfectDrawEnabled: false });
         txt.offsetX(txt.width() / 2); txt.offsetY(txt.height() / 2);
@@ -607,13 +630,19 @@
         if (e.evt.button !== 0) return;
         const raw = getWorldPos(e.evt);
 
-        if (activeTool === 'wall') {
-          const snapped = snapPoint(raw);
-          if (wallState.drawing && wallState.drawing.points.length >= 2) {
-            const start = wallState.drawing.points[0];
-            if ((snapped.snapped === 'v' && dist(snapped, start) < 12) || dist(raw, start) < 12) { finishDrawing(true); return; }
-          }
-          let effPt = snapped;
+          if (activeTool === 'wall') {
+            const snapped = snapPoint(raw);
+            if (wallState.drawing && wallState.drawing.points.length >= 2) {
+              const start = wallState.drawing.points[0];
+              if ((snapped.snapped === 'v' && dist(snapped, start) < 12) || dist(raw, start) < 12) { finishDrawing(true); return; }
+            }
+            // Click on an existing vertex during drawing → finish open (connect to that vertex)
+            if (wallState.drawing && wallState.drawing.points.length >= 1 && snapped.snapped === 'v') {
+              placeVertex(snapped);
+              finishDrawing(false);
+              return;
+            }
+            let effPt = snapped;
           if (snapped.snapped === 'w' && snapped.data) {
             const w = wallState.walls.find(x => x.id === snapped.data.wallId);
             if (w) {
@@ -658,25 +687,123 @@
         }
       });
 
-      // Pan on drag (middle button always, left button only when no tool active)
+      // ─── Rect drag (create / delete) ────────────────────────────────
       let panning = false, pStartX, pStartY, pPanX, pPanY;
+
+      stage.on('contextmenu', (e) => { e.evt.preventDefault(); });
+
       stage.on('mousedown', (e) => {
-        if (e.evt.button === 1 || (e.evt.button === 0 && !activeTool && e.target === stage)) {
+        if (e.evt.button === 0 && activeTool === 'wall' && !wallState.drawing) {
+          rectStart = getWorldPos(e.evt);
+          rectDragging = true;
+          return;
+        }
+        if (e.evt.button === 2) {
+          if (activeTool === 'wall' && wallState.drawing) { cancelDrawing(); e.evt.preventDefault(); return; }
+          rectStart = getWorldPos(e.evt);
+          deleteDragging = true;
+          return;
+        }
+        if (e.evt.button === 1) {
           panning = true;
           pStartX = e.evt.clientX; pStartY = e.evt.clientY;
           pPanX = panX; pPanY = panY;
           mapArea.style.cursor = 'grabbing';
         }
       });
+
       stage.on('mousemove', (e) => {
+        // Rect drag preview
+        if (rectDragging || deleteDragging) {
+          const pos = getWorldPos(e.evt);
+          clearTemp();
+          const x = Math.min(rectStart.x, pos.x);
+          const y = Math.min(rectStart.y, pos.y);
+          const w = Math.abs(pos.x - rectStart.x);
+          const h = Math.abs(pos.y - rectStart.y);
+          if (w > 2 || h > 2) {
+            const isDel = deleteDragging;
+            layers.temp.add(new Konva.Rect({
+              x, y, width: w, height: h,
+              stroke: isDel ? '#ef4444' : '#818cf8',
+              strokeWidth: 2, dash: [6, 4],
+              fill: isDel ? 'rgba(239,68,68,0.06)' : 'rgba(129,140,248,0.06)',
+              perfectDrawEnabled: false,
+            }));
+            layers.temp.batchDraw();
+          }
+          return;
+        }
+        // Pan
         if (panning) {
           panX = pPanX + (e.evt.clientX - pStartX);
           panY = pPanY + (e.evt.clientY - pStartY);
           applyTransform();
         }
       });
-      stage.on('mouseup', () => { panning = false; mapArea.style.cursor = ''; });
-      stage.on('mouseleave', () => { panning = false; mapArea.style.cursor = ''; });
+
+      stage.on('mouseup', (e) => {
+        // Finish rect creation
+        if (rectDragging && rectStart) {
+          const pos = getWorldPos(e.evt);
+          if (dist(rectStart, pos) > 5) {
+            const x1 = Math.min(rectStart.x, pos.x), y1 = Math.min(rectStart.y, pos.y);
+            const x2 = Math.max(rectStart.x, pos.x), y2 = Math.max(rectStart.y, pos.y);
+            const minS = 40;
+            if (x2 - x1 > minS && y2 - y1 > minS) {
+              addWall({ x: x1, y: y1 }, { x: x2, y: y1 });
+              addWall({ x: x2, y: y1 }, { x: x2, y: y2 });
+              addWall({ x: x2, y: y2 }, { x: x1, y: y2 });
+              addWall({ x: x1, y: y2 }, { x: x1, y: y1 });
+              saveStatus.textContent = 'unsaved changes';
+            }
+          }
+          rectDragging = false;
+          rectStart = null;
+          clearTemp();
+          return;
+        }
+        // Finish rect delete
+        if (deleteDragging && rectStart) {
+          const pos = getWorldPos(e.evt);
+          if (dist(rectStart, pos) > 5) {
+            const x1 = Math.min(rectStart.x, pos.x), y1 = Math.min(rectStart.y, pos.y);
+            const x2 = Math.max(rectStart.x, pos.x), y2 = Math.max(rectStart.y, pos.y);
+            const minS = 10;
+            if (x2 - x1 > minS && y2 - y1 > minS) {
+              const toDelete = wallState.walls.filter(w => {
+                const a = w.points[0], b = w.points[1];
+                return rectIntersectsSegment(x1, y1, x2, y2, a.x, a.y, b.x, b.y);
+              });
+              toDelete.forEach(w => deleteWall(w));
+            }
+          } else if (activeTool === 'wall') {
+            const hit = findNearbyWallSeg(pos);
+            if (hit) {
+              const wall = wallState.walls.find(w => w.id === hit.wallId);
+              if (wall) deleteWall(wall);
+            }
+          }
+          deleteDragging = false;
+          rectStart = null;
+          clearTemp();
+          return;
+        }
+        // End pan
+        panning = false;
+        mapArea.style.cursor = '';
+      });
+
+      stage.on('mouseleave', () => {
+        panning = false;
+        mapArea.style.cursor = '';
+        if (rectDragging || deleteDragging) {
+          rectDragging = false;
+          deleteDragging = false;
+          rectStart = null;
+          clearTemp();
+        }
+      });
 
       // Zoom via scroll
       stage.on('wheel', (e) => {
@@ -695,7 +822,8 @@
     function updateInfo() {
       const wc = wallState.walls.length;
       const cc = Object.keys(cameras).length;
-      infoEl.textContent = 'Walls: ' + wc + '  Cameras: ' + cc;
+      infoEl.innerHTML = 'Walls: ' + wc + '  Cameras: ' + cc +
+        '<br><span style="color:rgba(255,255,255,0.08);font-size:9px">Left drag = rect · Right-click wall = delete · Middle = pan</span>';
     }
 
     function updateStreamSelector() {
@@ -734,7 +862,7 @@
           if (tool === 'wall') {
             streamSelector.classList.remove('show');
             selectedStream = null;
-            setStatus('Click to place first wall point · <span class="key">Esc</span> exit');
+            setStatus('<span class="key">Drag</span> to create rectangle · <span class="key">Right-click</span> wall to delete · click to draw · <span class="key">Esc</span> exit');
             mapArea.style.cursor = 'crosshair';
           } else if (tool === 'camera') {
             cancelDrawing();
