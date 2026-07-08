@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Map Editor</title>
+  <script src="https://unpkg.com/konva@9/konva.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #1a1a2e; font-family: 'Segoe UI', sans-serif; }
+    #container { width: 100%; height: 100%; }
+    #container canvas { display: block; }
+
+    #toolbar {
+      position: fixed;
+      bottom: 32px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      z-index: 100;
+      background: rgba(26, 26, 46, 0.9);
+      backdrop-filter: blur(8px);
+      border: 1px solid rgba(255,255,255,0.10);
+      border-radius: 14px;
+      padding: 6px 10px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+    }
+    #toolbar .tool-btn {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 14px;
+      border: none;
+      border-radius: 9px;
+      background: transparent;
+      color: rgba(255,255,255,0.5);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s;
+      white-space: nowrap;
+    }
+    #toolbar .tool-btn:hover { background: rgba(255,255,255,0.07); color: #fff; }
+    #toolbar .tool-btn.active {
+      background: rgba(99, 102, 241, 0.2);
+      color: #a5b4fc;
+      box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.25);
+    }
+    #toolbar .tool-btn .icon { font-size: 16px; line-height: 1; }
+    #toolbar .tool-btn .label { font-size: 12px; }
+    #toolbar .divider { width: 1px; height: 26px; background: rgba(255,255,255,0.08); margin: 0 4px; }
+    #toolbar .tool-btn:disabled { cursor: not-allowed; }
+
+    #status {
+      position: fixed;
+      bottom: 82px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 100;
+      color: rgba(255,255,255,0.4);
+      font-size: 12px;
+      background: rgba(0,0,0,0.45);
+      backdrop-filter: blur(4px);
+      padding: 5px 14px;
+      border-radius: 7px;
+      border: 1px solid rgba(255,255,255,0.05);
+      pointer-events: none;
+      text-align: center;
+      white-space: nowrap;
+      transition: opacity 0.15s;
+    }
+    #status .key {
+      color: rgba(255,255,255,0.6);
+      background: rgba(255,255,255,0.07);
+      padding: 0 5px;
+      border-radius: 3px;
+      font-family: monospace;
+      font-size: 10px;
+    }
+
+    #coord-display {
+      position: fixed;
+      bottom: 82px;
+      right: 16px;
+      z-index: 100;
+      color: rgba(255,255,255,0.25);
+      font-size: 11px;
+      font-family: monospace;
+      pointer-events: none;
+      text-align: right;
+    }
+
+    #wall-count {
+      position: fixed;
+      top: 16px;
+      right: 16px;
+      z-index: 100;
+      color: rgba(255,255,255,0.2);
+      font-size: 11px;
+      font-family: monospace;
+      pointer-events: none;
+      background: rgba(0,0,0,0.3);
+      padding: 6px 10px;
+      border-radius: 6px;
+      border: 1px solid rgba(255,255,255,0.04);
+    }
+  </style>
+</head>
+<body>
+  <div id="container"></div>
+
+  <div id="toolbar">
+    <button class="tool-btn" data-tool="wall">
+      <span class="icon">▤</span>
+      <span class="label">Wall</span>
+    </button>
+    <div class="divider"></div>
+    <button class="tool-btn" data-tool="door" disabled style="opacity:0.35">
+      <span class="icon">⊞</span>
+      <span class="label">Door</span>
+    </button>
+    <button class="tool-btn" data-tool="camera" disabled style="opacity:0.35">
+      <span class="icon">⊙</span>
+      <span class="label">Camera</span>
+    </button>
+  </div>
+
+  <div id="status">Click <span class="key">Wall</span> to start drawing</div>
+  <div id="coord-display"></div>
+  <div id="wall-count">Walls: 0</div>
+
+  <script>
+    // ─── Configuration ────────────────────────────────────────────────────
+    const SCALE = 60;
+    const WALL_STROKE = 2.5;
+    const WALL_HIT = 12;
+    const SNAP_VERTEX = 12;
+    const SNAP_WALL = 8;
+    const LABEL_OFFSET = 18;
+
+    // ─── DOM refs ─────────────────────────────────────────────────────────
+    const container = document.getElementById('container');
+    const statusEl = document.getElementById('status');
+    const coordEl = document.getElementById('coord-display');
+    const wallCountEl = document.getElementById('wall-count');
+    const toolBtns = document.querySelectorAll('.tool-btn[data-tool]');
+
+    // ─── State ────────────────────────────────────────────────────────────
+    const state = {
+      mode: 'idle',
+      walls: [],
+      drawing: null,
+      wallIdCounter: 0,
+    };
+
+    // ─── Konva Setup ─────────────────────────────────────────────────────
+    const width = container.offsetWidth || window.innerWidth;
+    const height = container.offsetHeight || window.innerHeight;
+
+    const stage = new Konva.Stage({ container: 'container', width, height });
+
+    const gridLayer = new Konva.Layer();
+    const wallLayer = new Konva.Layer();
+    const drawLayer = new Konva.Layer();   // segments placed during active drawing
+    const tempLayer = new Konva.Layer();   // cursor-following line + snap indicators
+    const uiLayer = new Konva.Layer();     // start dot, overlays
+
+    stage.add(gridLayer);
+    stage.add(wallLayer);
+    stage.add(drawLayer);
+    stage.add(tempLayer);
+    stage.add(uiLayer);
+
+    // ─── Resize & Grid ───────────────────────────────────────────────────
+    function resize() {
+      const w = container.offsetWidth || window.innerWidth;
+      const h = container.offsetHeight || window.innerHeight;
+      stage.width(w);
+      stage.height(h);
+      drawGrid();
+    }
+    window.addEventListener('resize', resize);
+
+    function drawGrid() {
+      gridLayer.destroyChildren();
+      const w = stage.width();
+      const h = stage.height();
+      const step = SCALE;
+      const majorPts = [];
+      const minorPts = [];
+
+      for (let x = 0; x <= w; x += step) {
+        const arr = x % (step * 5) === 0 ? majorPts : minorPts;
+        arr.push(x, 0, x, h);
+      }
+      for (let y = 0; y <= h; y += step) {
+        const arr = y % (step * 5) === 0 ? majorPts : minorPts;
+        arr.push(0, y, w, y);
+      }
+
+      gridLayer.add(new Konva.Line({ points: minorPts, stroke: 'rgba(255,255,255,0.025)', strokeWidth: 1 }));
+      gridLayer.add(new Konva.Line({ points: majorPts, stroke: 'rgba(255,255,255,0.05)', strokeWidth: 1 }));
+      gridLayer.batchDraw();
+    }
+
+    // ─── Geometry helpers ────────────────────────────────────────────────
+    function dist(a, b) {
+      return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
+    }
+
+    function distToSegment(px, py, ax, ay, bx, by) {
+      const dx = bx - ax, dy = by - ay;
+      const lenSq = dx * dx + dy * dy;
+      if (lenSq === 0) return dist({ x: px, y: py }, { x: ax, y: ay });
+      let t = ((px - ax) * dx + (py - ay) * dy) / lenSq;
+      t = Math.max(0, Math.min(1, t));
+      return dist({ x: px, y: py }, { x: ax + t * dx, y: ay + t * dy });
+    }
+
+    function closestOnSegment(px, py, ax, ay, bx, by) {
+      const dx = bx - ax, dy = by - ay;
+      const lenSq = dx * dx + dy * dy;
+      if (lenSq === 0) return { x: ax, y: ay, t: 0 };
+      let t = ((px - ax) * dx + (py - ay) * dy) / lenSq;
+      t = Math.max(0, Math.min(1, t));
+      return { x: ax + t * dx, y: ay + t * dy, t };
+    }
+
+    function midpoint(a, b) {
+      return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    }
+
+    function perpOffset(a, b, offset) {
+      const m = midpoint(a, b);
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      if (len < 0.01) return { x: m.x, y: m.y + offset };
+      return {
+        x: m.x - (dy / len) * offset,
+        y: m.y + (dx / len) * offset,
+      };
+    }
+
+    function formatLength(px) {
+      const meters = px / SCALE;
+      if (meters < 10) return meters.toFixed(1) + 'm';
+      return Math.round(meters) + 'm';
+    }
+
+    function generateId() {
+      return 'wall_' + (state.wallIdCounter++);
+    }
+
+    // ─── Snap helpers ────────────────────────────────────────────────────
+    function findNearbyVertex(point) {
+      let best = null;
+      let bestDist = SNAP_VERTEX;
+      for (const w of state.walls) {
+        for (const p of w.points) {
+          const d = dist(point, p);
+          if (d < bestDist) { bestDist = d; best = p; }
+        }
+      }
+      return best;
+    }
+
+    function findNearbyWallSegment(point) {
+      let best = null;
+      let bestDist = SNAP_WALL;
+      for (const w of state.walls) {
+        const pts = w.points;
+        const len = w.closed ? pts.length : pts.length - 1;
+        for (let i = 0; i < len; i++) {
+          const a = pts[i];
+          const b = pts[(i + 1) % pts.length];
+          const res = closestOnSegment(point.x, point.y, a.x, a.y, b.x, b.y);
+          if (dist(res, a) < SNAP_VERTEX - 2 || dist(res, b) < SNAP_VERTEX - 2) continue;
+          const d = dist(point, res);
+          if (d < bestDist) {
+            bestDist = d;
+            best = { ...res, wallId: w.id, segIndex: i };
+          }
+        }
+      }
+      return best;
+    }
+
+    function findSnappedPoint(raw) {
+      const v = findNearbyVertex(raw);
+      if (v) return { ...v, snapped: 'vertex', data: v };
+      const seg = findNearbyWallSegment(raw);
+      if (seg) return { x: seg.x, y: seg.y, snapped: 'wall', data: seg };
+      return { x: raw.x, y: raw.y, snapped: false, data: null };
+    }
+
+    // ─── Wall CRUD ───────────────────────────────────────────────────────
+    function createWallLine(points, closed) {
+      const flat = points.flatMap(p => [p.x, p.y]);
+      const line = new Konva.Line({
+        points: flat,
+        stroke: '#e2e2ec',
+        strokeWidth: WALL_STROKE,
+        hitStrokeWidth: WALL_HIT,
+        closed,
+        lineCap: 'round',
+        lineJoin: 'round',
+        perfectDrawEnabled: false,
+        shadowColor: 'rgba(255,255,255,0.04)',
+        shadowBlur: 4,
+        shadowOffset: { x: 0, y: 1 },
+      });
+      line.on('mouseenter', () => {
+        if (state.mode === 'wall') { line.stroke('#9298f0'); wallLayer.batchDraw(); }
+      });
+      line.on('mouseleave', () => {
+        line.stroke('#e2e2ec'); wallLayer.batchDraw();
+      });
+      return line;
+    }
+
+    function createVertexDots(points) {
+      return points.map(p => new Konva.Circle({
+        x: p.x, y: p.y,
+        radius: 2,
+        fill: 'rgba(255,255,255,0.25)',
+        perfectDrawEnabled: false,
+      }));
+    }
+
+    function addWall(points, closed) {
+      const id = generateId();
+      const line = createWallLine(points, closed);
+      const dots = createVertexDots(points);
+      const wall = { id, points: points.map(p => ({ ...p })), closed, line, dots };
+      state.walls.push(wall);
+      wallLayer.add(line);
+      dots.forEach(d => wallLayer.add(d));
+      wallLayer.batchDraw();
+      updateWallCount();
+      return wall;
+    }
+
+    function splitWallAtPoint(wall, worldPoint) {
+      const pts = wall.points;
+      let bestSeg = -1;
+      let bestDist = Infinity;
+      const threshold = SNAP_WALL;
+
+      const len = wall.closed ? pts.length : pts.length - 1;
+      for (let i = 0; i < len; i++) {
+        const a = pts[i], b = pts[(i + 1) % pts.length];
+        const res = closestOnSegment(worldPoint.x, worldPoint.y, a.x, a.y, b.x, b.y);
+        const d = dist(worldPoint, res);
+        if (d < bestDist) { bestDist = d; bestSeg = i; }
+      }
+      if (bestSeg === -1 || bestDist > threshold) return null;
+
+      // too close to an existing vertex
+      const a = pts[bestSeg], b = pts[(bestSeg + 1) % pts.length];
+      const res = closestOnSegment(worldPoint.x, worldPoint.y, a.x, a.y, b.x, b.y);
+      if (dist(res, a) < SNAP_VERTEX - 2 || dist(res, b) < SNAP_VERTEX - 2) return null;
+
+      const insertIdx = bestSeg + 1;
+      const newPoint = { x: res.x, y: res.y };
+      pts.splice(insertIdx, 0, newPoint);
+      wall.line.points(pts.flatMap(p => [p.x, p.y]));
+      wall.dots.forEach(d => d.destroy());
+      wall.dots = createVertexDots(pts);
+      wall.dots.forEach(d => wallLayer.add(d));
+      wallLayer.batchDraw();
+      return newPoint;
+    }
+
+    function removeWall(wall) {
+      wall.line.destroy();
+      wall.dots.forEach(d => d.destroy());
+      const idx = state.walls.indexOf(wall);
+      if (idx !== -1) state.walls.splice(idx, 1);
+      wallLayer.batchDraw();
+      updateWallCount();
+    }
+
+    function updateWallCount() {
+      wallCountEl.textContent = 'Walls: ' + state.walls.length;
+    }
+
+    // ─── Drawing helpers ─────────────────────────────────────────────────
+    let snapIndicatorRing = null;
+
+    function drawCursorLine(from, to, isSnapped) {
+      clearTempLayer();
+      const g = new Konva.Group();
+      const color = isSnapped ? '#818cf8' : 'rgba(255,255,255,0.35)';
+      const line = new Konva.Line({
+        points: [from.x, from.y, to.x, to.y],
+        stroke: color,
+        strokeWidth: 2,
+        dash: isSnapped ? [] : [5, 4],
+        lineCap: 'round',
+        perfectDrawEnabled: false,
+      });
+      g.add(line);
+
+      if (dist(from, to) > 2) {
+        const len = dist(from, to);
+        const labelPos = perpOffset(from, to, LABEL_OFFSET);
+        const txt = new Konva.Text({
+          text: formatLength(len),
+          fontSize: 11,
+          fontFamily: 'monospace',
+          fill: 'rgba(255,255,255,0.8)',
+          align: 'center',
+          perfectDrawEnabled: false,
+        });
+        txt.offsetX(txt.width() / 2);
+        txt.offsetY(txt.height() / 2);
+        const pad = 3;
+        const bg = new Konva.Rect({
+          x: labelPos.x - txt.width() / 2 - pad,
+          y: labelPos.y - txt.height() / 2 - pad,
+          width: txt.width() + pad * 2,
+          height: txt.height() + pad * 2,
+          fill: 'rgba(0,0,0,0.55)',
+          cornerRadius: 3,
+          perfectDrawEnabled: false,
+        });
+        g.add(bg);
+        g.add(txt);
+      }
+
+      if (isSnapped) {
+        snapIndicatorRing = new Konva.Circle({
+          x: to.x, y: to.y,
+          radius: 5,
+          stroke: '#818cf8',
+          strokeWidth: 1.5,
+          fill: 'rgba(129,140,248,0.1)',
+          perfectDrawEnabled: false,
+        });
+        g.add(snapIndicatorRing);
+      }
+
+      tempLayer.add(g);
+      tempLayer.batchDraw();
+    }
+
+    function clearTempLayer() {
+      tempLayer.destroyChildren();
+      snapIndicatorRing = null;
+      tempLayer.batchDraw();
+    }
+
+    function clearDrawLayer() {
+      drawLayer.destroyChildren();
+      drawLayer.batchDraw();
+    }
+
+    // ─── Drawing state machine ───────────────────────────────────────────
+    function startDrawing(firstPoint) {
+      state.drawing = {
+        points: [{ ...firstPoint }],
+        segmentLines: [],
+      };
+      clearTempLayer();
+      clearDrawLayer();
+      showStartDot(firstPoint);
+      setStatus('Click to place points · Click start to close · <span class="key">Enter</span> finish · <span class="key">Esc</span> cancel');
+    }
+
+    let startDotShape = null;
+    let startDotRing = null;
+
+    function showStartDot(point) {
+      hideStartDot();
+      startDotRing = new Konva.Circle({
+        x: point.x, y: point.y,
+        radius: 7,
+        stroke: 'rgba(129,140,248,0.35)',
+        strokeWidth: 1.5,
+        dash: [3, 3],
+        perfectDrawEnabled: false,
+      });
+      startDotShape = new Konva.Circle({
+        x: point.x, y: point.y,
+        radius: 3.5,
+        fill: '#818cf8',
+        perfectDrawEnabled: false,
+      });
+      uiLayer.add(startDotRing);
+      uiLayer.add(startDotShape);
+      uiLayer.batchDraw();
+    }
+
+    function hideStartDot() {
+      if (startDotShape) { startDotShape.destroy(); startDotShape = null; }
+      if (startDotRing) { startDotRing.destroy(); startDotRing = null; }
+      uiLayer.batchDraw();
+    }
+
+    function placeVertex(point) {
+      if (!state.drawing) {
+        startDrawing(point);
+        return;
+      }
+      const prev = state.drawing.points[state.drawing.points.length - 1];
+      state.drawing.points.push({ ...point });
+
+      const seg = new Konva.Line({
+        points: [prev.x, prev.y, point.x, point.y],
+        stroke: 'rgba(255,255,255,0.25)',
+        strokeWidth: WALL_STROKE,
+        lineCap: 'round',
+        perfectDrawEnabled: false,
+      });
+      state.drawing.segmentLines.push(seg);
+      drawLayer.add(seg);
+      drawLayer.batchDraw();
+    }
+
+    function finishDrawing(closed) {
+      if (!state.drawing || state.drawing.points.length < 2) {
+        cancelDrawing();
+        return;
+      }
+      const pts = state.drawing.points;
+      const clean = [pts[0]];
+      for (let i = 1; i < pts.length; i++) {
+        if (dist(pts[i], pts[i - 1]) > 0.5) clean.push(pts[i]);
+      }
+      if (clean.length < 2) { cancelDrawing(); return; }
+
+      // destroy temp segment lines, they're replaced by the wall line
+      state.drawing.segmentLines.forEach(l => l.destroy());
+      state.drawing.segmentLines = [];
+      clearDrawLayer();
+
+      clearTempLayer();
+      hideStartDot();
+      state.drawing = null;
+
+      addWall(clean, closed);
+      setStatus('Wall placed · keep drawing or press <span class="key">Esc</span> to exit');
+      updateCursorLine();
+    }
+
+    function cancelDrawing() {
+      if (state.drawing) {
+        state.drawing.segmentLines.forEach(l => l.destroy());
+        state.drawing = null;
+      }
+      clearDrawLayer();
+      clearTempLayer();
+      hideStartDot();
+      if (state.mode === 'wall') {
+        setStatus('Click to place first wall point · <span class="key">Esc</span> to exit');
+      } else {
+        setStatus('Click <span class="key">Wall</span> to start drawing');
+      }
+    }
+
+    // ─── Pointer handling ────────────────────────────────────────────────
+    function getWorldPos() {
+      const p = stage.getPointerPosition();
+      return p ? { x: p.x, y: p.y } : { x: 0, y: 0 };
+    }
+
+    function handleStageClick(e) {
+      if (state.mode !== 'wall') return;
+      if (e.evt.button !== 0) return;
+      const raw = getWorldPos();
+      const snapped = findSnappedPoint(raw);
+
+      // 1) Click on start vertex → close polygon
+      if (state.drawing && state.drawing.points.length >= 2) {
+        const start = state.drawing.points[0];
+        if (snapped.snapped === 'vertex' && dist(snapped, start) < SNAP_VERTEX) {
+          finishDrawing(true);
+          return;
+        }
+        // also check raw distance to start (direct click without snap)
+        if (dist(raw, start) < SNAP_VERTEX) {
+          finishDrawing(true);
+          return;
+        }
+      }
+
+      // 2) Handle wall splitting before anything else
+      let effectivePt = snapped;
+      if (snapped.snapped === 'wall' && snapped.data) {
+        const wall = state.walls.find(w => w.id === snapped.data.wallId);
+        if (wall) {
+          const newPt = splitWallAtPoint(wall, snapped);
+          if (newPt) {
+            effectivePt = { x: newPt.x, y: newPt.y, snapped: 'wall', data: null };
+          } else {
+            // split failed (too close to vertex) — snap falls back to vertex
+            const v = findNearbyVertex(snapped);
+            if (v) effectivePt = { ...v, snapped: 'vertex', data: null };
+          }
+        }
+      }
+
+      // 3) If drawing and clicked on a wall → finish & connect
+      if (state.drawing && state.drawing.points.length >= 1 && effectivePt.snapped === 'wall') {
+        placeVertex(effectivePt);
+        finishDrawing(false);
+        return;
+      }
+
+      // 4) Normal vertex placement
+      placeVertex(effectivePt);
+    }
+
+    function updateCursorLine() {
+      if (state.mode !== 'wall' || !state.drawing) {
+        clearTempLayer();
+        return;
+      }
+      const raw = getWorldPos();
+      const snapped = findSnappedPoint(raw);
+      const last = state.drawing.points[state.drawing.points.length - 1];
+      drawCursorLine(last, snapped, snapped.snapped ? true : false);
+    }
+
+    function handleStageMove() {
+      const raw = getWorldPos();
+      const mx = (raw.x / SCALE).toFixed(1);
+      const my = (raw.y / SCALE).toFixed(1);
+      coordEl.textContent = `${mx}m, ${my}m`;
+      updateCursorLine();
+    }
+
+    function handleKeyDown(e) {
+      if (e.key === 'Escape') {
+        if (state.drawing) { cancelDrawing(); e.preventDefault(); }
+        else if (state.mode === 'wall') { setTool(null); e.preventDefault(); }
+      }
+      if (e.key === 'Enter') {
+        if (state.drawing && state.drawing.points.length >= 2) {
+          finishDrawing(false);
+          e.preventDefault();
+        }
+      }
+      if (e.key === 'Backspace') {
+        if (state.drawing) {
+          if (state.drawing.points.length > 1) {
+            // remove last segment
+            const segLine = state.drawing.segmentLines.pop();
+            if (segLine) segLine.destroy();
+            state.drawing.points.pop();
+            drawLayer.batchDraw();
+            updateCursorLine();
+          } else {
+            cancelDrawing();
+          }
+          e.preventDefault();
+        }
+      }
+    }
+
+    // ─── Tool management ─────────────────────────────────────────────────
+    function setTool(tool) {
+      if (state.drawing) cancelDrawing();
+      toolBtns.forEach(btn => btn.classList.remove('active'));
+
+      if (!tool || tool === state.mode) {
+        state.mode = 'idle';
+        stage.container().style.cursor = 'default';
+        clearTempLayer();
+        setStatus('Click <span class="key">Wall</span> to start drawing');
+      } else {
+        state.mode = tool;
+        stage.container().style.cursor = 'crosshair';
+        toolBtns.forEach(btn => {
+          if (btn.dataset.tool === tool) btn.classList.add('active');
+        });
+        setStatus('Click to place first wall point · <span class="key">Esc</span> to exit');
+      }
+    }
+
+    function setStatus(html) {
+      statusEl.innerHTML = html;
+    }
+
+    // ─── Event binding ───────────────────────────────────────────────────
+    stage.on('click', handleStageClick);
+    stage.on('mousemove', handleStageMove);
+    window.addEventListener('keydown', handleKeyDown);
+
+    toolBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const tool = btn.dataset.tool;
+        if (btn.disabled) return;
+        setTool(tool);
+      });
+    });
+
+    // ─── Init ────────────────────────────────────────────────────────────
+    drawGrid();
+    updateWallCount();
+    setStatus('Click <span class="key">Wall</span> to start drawing');
+
+    // Demo walls
+    addWall([
+      { x: 180, y: 140 },
+      { x: 540, y: 140 },
+      { x: 540, y: 400 },
+      { x: 180, y: 400 },
+    ], true);
+
+    addWall([
+      { x: 360, y: 140 },
+      { x: 360, y: 400 },
+    ], false);
+
+    console.log('Map Editor ready · Scale: 1m = ' + SCALE + 'px');
+  </script>
+</body>
+</html>
