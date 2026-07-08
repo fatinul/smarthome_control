@@ -66,8 +66,8 @@ services:
       - /app/node_modules
     # ------------------------------
     environment:
-      - GO2RTC_HOST="frigate"
-      - GO2RTC_PORT="1984"
-      - NODE_ENV=development   # Helps ensure Express doesn't cache EJS
+      - GO2RTC_HOST=frigate
+      - GO2RTC_PORT=1984
+      - NODE_ENV=development
     depends_on:
       - frigate
