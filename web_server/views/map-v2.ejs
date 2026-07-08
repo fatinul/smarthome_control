@@ -626,6 +626,12 @@
             }
           }
           if (wallState.drawing && wallState.drawing.points.length >= 1 && effPt.snapped === 'w') { placeVertex(effPt); finishDrawing(false); return; }
+          // Apply Ctrl constraint during active drawing (matches mousemove preview)
+          if (ctrlHeld && wallState.drawing && wallState.drawing.points.length >= 1) {
+            const last = wallState.drawing.points[wallState.drawing.points.length - 1];
+            effPt = constrainAngle(last, effPt);
+            if (wallState.drawing.points.length >= 2 && dist(effPt, wallState.drawing.points[0]) < 12) { finishDrawing(true); return; }
+          }
           placeVertex(effPt);
         } else if (activeTool === 'camera') {
           if (!selectedStream) {
