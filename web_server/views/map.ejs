@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Map Editor</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #1a1a1a;
+      color: #fff;
+      overflow: hidden;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    #toolbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 16px;
+      background: #2a2a2a;
+      border-bottom: 1px solid #3a3a3a;
+      flex-shrink: 0;
+      flex-wrap: wrap;
+      z-index: 10;
+    }
+    #toolbar .title { font-weight: 600; font-size: 15px; }
+    #toolbar .sep { width: 1px; height: 24px; background: #444; }
+    #toolbar button {
+      background: #3a3a3a;
+      border: 1px solid #555;
+      color: #fff;
+      padding: 4px 12px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    #toolbar button:hover { background: #4a4a4a; }
+    #toolbar button.primary { background: #2563eb; border-color: #3b82f6; }
+    #toolbar button.primary:hover { background: #3b82f6; }
+    #toolbar .zoom-level { font-size: 13px; color: #aaa; min-width: 40px; text-align: center; }
+    #toolbar .cam-pool { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
+    #toolbar .cam-chip {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      background: #333;
+      border: 1px solid #555;
+      border-radius: 4px;
+      padding: 2px 10px 2px 6px;
+      font-size: 12px;
+      cursor: pointer;
+      user-select: none;
+    }
+    #toolbar .cam-chip:hover { background: #444; }
+    #toolbar .cam-chip svg { width: 14px; height: 14px; flex-shrink: 0; }
+    #toolbar .cam-chip.on-map { border-color: #22c55e; background: #1a3a2a; }
+
+    #map-container {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+      cursor: grab;
+    }
+    #map-container:active { cursor: grabbing; }
+
+    #map-transform {
+      position: absolute;
+      top: 0; left: 0;
+      transform-origin: 0 0;
+    }
+
+    #map-image {
+      display: block;
+      max-width: none;
+      user-select: none;
+      -webkit-user-drag: none;
+      pointer-events: none;
+    }
+
+    .camera-icon {
+      position: absolute;
+      width: 40px;
+      height: 40px;
+      transform: translate(-50%, -50%);
+      cursor: move;
+      user-select: none;
+      z-index: 2;
+      filter: drop-shadow(0 2px 4px rgba(0,0,0,.6));
+      transition: opacity .15s;
+    }
+    .camera-icon:hover { opacity: .8; }
+    .camera-icon svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    .camera-icon .label {
+      position: absolute;
+      bottom: -18px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 10px;
+      white-space: nowrap;
+      background: rgba(0,0,0,.7);
+      padding: 1px 6px;
+      border-radius: 3px;
+      pointer-events: none;
+    }
+    .camera-icon.dragging {
+      z-index: 5;
+      opacity: .85;
+      filter: drop-shadow(0 4px 12px rgba(37,99,235,.6));
+    }
+
+    /* Grid overlay when no image */
+    .grid-bg {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      background-image:
+        linear-gradient(rgba(255,255,255,.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,.04) 1px, transparent 1px);
+      background-size: 40px 40px;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="toolbar">
+    <span class="title">Map Editor</span>
+    <div class="sep"></div>
+    <button id="btn-zoom-out">−</button>
+    <span class="zoom-level" id="zoom-level">100%</span>
+    <button id="btn-zoom-in">+</button>
+    <button id="btn-zoom-reset">Reset</button>
+    <div class="sep"></div>
+    <button id="btn-save" class="primary">Save</button>
+    <span id="save-status" style="font-size:12px;color:#888;"></span>
+    <div class="sep"></div>
+    <a href="/" style="color:#888;font-size:13px;text-decoration:none;">&larr; Cameras</a>
+    <div class="cam-pool">
+      <% streams.forEach(stream => { %>
+        <div class="cam-chip" data-stream="<%= stream %>" title="Click to add to map">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M23 7l-7 5 7 5V7z"/>
+            <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+          </svg>
+          <span><%= stream %></span>
+        </div>
+      <% }) %>
+    </div>
+  </div>
+
+  <div id="map-container">
+    <div id="map-transform">
+      <div class="grid-bg"></div>
+      <img id="map-image" src="/oc.png" alt="Building Plan" />
+    </div>
+  </div>
+
+  <script>
+    const streams = <%- JSON.stringify(streams) %>;
+    const initialCameras = <%- JSON.stringify(cameras) %>;
+
+    const container = document.getElementById('map-container');
+    const transform = document.getElementById('map-transform');
+    const mapImage = document.getElementById('map-image');
+    const zoomLevelEl = document.getElementById('zoom-level');
+    const saveBtn = document.getElementById('btn-save');
+    const saveStatus = document.getElementById('save-status');
+
+    let scale = 1;
+    let panX = 0;
+    let panY = 0;
+    let cameras = {};
+
+    // Drag state
+    let dragTarget = null;
+    let dragStartX = 0;
+    let dragStartY = 0;
+    let dragCamStartX = 0;
+    let dragCamStartY = 0;
+
+    // Pan state
+    let panning = false;
+    let panStartX = 0;
+    let panStartY = 0;
+    let panStartPanX = 0;
+    let panStartPanY = 0;
+
+    function applyTransform() {
+      transform.style.transform = `translate(${panX}px, ${panY}px) scale(${scale})`;
+    }
+
+    function renderCameras() {
+      // Remove existing camera icons
+      transform.querySelectorAll('.camera-icon').forEach(el => el.remove());
+
+      // Update chips to show which are on the map
+      document.querySelectorAll('.cam-chip').forEach(chip => {
+        const s = chip.dataset.stream;
+        chip.classList.toggle('on-map', s in cameras);
+      });
+
+      for (const [stream, pos] of Object.entries(cameras)) {
+        const div = document.createElement('div');
+        div.className = 'camera-icon';
+        div.dataset.stream = stream;
+        div.style.left = pos.x + 'px';
+        div.style.top = pos.y + 'px';
+        div.innerHTML = `
+          <svg viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M23 7l-7 5 7 5V7z"/>
+            <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+          </svg>
+          <span class="label">${stream}</span>
+        `;
+        transform.appendChild(div);
+      }
+    }
+
+    function panTo(x, y) {
+      panX = x;
+      panY = y;
+      applyTransform();
+    }
+
+    function zoomAt(ws, newScale, cx, cy) {
+      const rect = container.getBoundingClientRect();
+      const mx = cx - rect.left;
+      const my = cy - rect.top;
+
+      // World point under cursor before zoom
+      const wx = (mx - panX) / scale;
+      const wy = (my - panY) / scale;
+
+      scale = Math.max(0.1, Math.min(10, newScale));
+
+      // Adjust pan so the same world point stays under cursor
+      panX = mx - wx * scale;
+      panY = my - wy * scale;
+
+      applyTransform();
+      zoomLevelEl.textContent = Math.round(scale * 100) + '%';
+    }
+
+    function addCamera(stream) {
+      if (stream in cameras) return;
+
+      const rect = container.getBoundingClientRect();
+      const cx = rect.width / 2;
+      const cy = rect.height / 2;
+
+      // Place at center of viewport (in world coords)
+      const wx = (cx - panX) / scale;
+      const wy = (cy - panY) / scale;
+
+      cameras[stream] = { x: wx, y: wy };
+      renderCameras();
+      saveStatus.textContent = 'unsaved changes';
+    }
+
+    function removeCamera(stream) {
+      delete cameras[stream];
+      renderCameras();
+      saveStatus.textContent = 'unsaved changes';
+    }
+
+    // --- Event Listeners ---
+
+    // Zoom via scroll wheel
+    container.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const delta = e.deltaY > 0 ? -0.1 : 0.1;
+      zoomAt(e, scale + delta, e.clientX, e.clientY);
+    }, { passive: false });
+
+    // Zoom buttons
+    document.getElementById('btn-zoom-in').addEventListener('click', () => {
+      const rect = container.getBoundingClientRect();
+      zoomAt(null, scale + 0.2, rect.left + rect.width / 2, rect.top + rect.height / 2);
+    });
+    document.getElementById('btn-zoom-out').addEventListener('click', () => {
+      const rect = container.getBoundingClientRect();
+      zoomAt(null, scale - 0.2, rect.left + rect.width / 2, rect.top + rect.height / 2);
+    });
+    document.getElementById('btn-zoom-reset').addEventListener('click', () => {
+      scale = 1;
+      panX = 0;
+      panY = 0;
+      applyTransform();
+      zoomLevelEl.textContent = '100%';
+    });
+
+    // Camera chip click to add
+    document.querySelectorAll('.cam-chip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        const stream = chip.dataset.stream;
+        if (stream in cameras) {
+          removeCamera(stream);
+        } else {
+          addCamera(stream);
+        }
+      });
+    });
+
+    // Right-click on camera icon to remove
+    transform.addEventListener('contextmenu', (e) => {
+      const icon = e.target.closest('.camera-icon');
+      if (icon) {
+        e.preventDefault();
+        removeCamera(icon.dataset.stream);
+      }
+    });
+
+    // --- Drag camera ---
+    transform.addEventListener('mousedown', (e) => {
+      const icon = e.target.closest('.camera-icon');
+      if (!icon) return;
+      if (e.button !== 0) return;
+
+      e.stopPropagation();
+      dragTarget = icon;
+      dragTarget.classList.add('dragging');
+      dragStartX = e.clientX;
+      dragStartY = e.clientY;
+
+      const stream = icon.dataset.stream;
+      const pos = cameras[stream];
+      dragCamStartX = pos.x;
+      dragCamStartY = pos.y;
+    });
+
+    // --- Pan map ---
+    container.addEventListener('mousedown', (e) => {
+      if (e.target.closest('.camera-icon')) return;
+      if (e.target.closest('#toolbar')) return;
+      if (e.button !== 0) return;
+
+      panning = true;
+      panStartX = e.clientX;
+      panStartY = e.clientY;
+      panStartPanX = panX;
+      panStartPanY = panY;
+      container.style.cursor = 'grabbing';
+    });
+
+    document.addEventListener('mousemove', (e) => {
+      if (dragTarget) {
+        const stream = dragTarget.dataset.stream;
+        const dx = (e.clientX - dragStartX) / scale;
+        const dy = (e.clientY - dragStartY) / scale;
+        cameras[stream] = {
+          x: dragCamStartX + dx,
+          y: dragCamStartY + dy,
+        };
+        dragTarget.style.left = cameras[stream].x + 'px';
+        dragTarget.style.top = cameras[stream].y + 'px';
+        saveStatus.textContent = 'unsaved changes';
+      } else if (panning) {
+        panX = panStartPanX + (e.clientX - panStartX);
+        panY = panStartPanY + (e.clientY - panStartY);
+        applyTransform();
+      }
+    });
+
+    document.addEventListener('mouseup', (e) => {
+      if (dragTarget) {
+        dragTarget.classList.remove('dragging');
+        dragTarget = null;
+      }
+      if (panning) {
+        panning = false;
+        container.style.cursor = 'grab';
+      }
+    });
+
+    // --- Save ---
+    saveBtn.addEventListener('click', async () => {
+      try {
+        const res = await fetch('/api/cameras', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(cameras),
+        });
+        if (!res.ok) throw new Error('Save failed');
+        saveStatus.textContent = 'saved';
+        setTimeout(() => { saveStatus.textContent = ''; }, 2000);
+      } catch (err) {
+        saveStatus.textContent = 'error: ' + err.message;
+      }
+    });
+
+    // --- Init ---
+    cameras = JSON.parse(JSON.stringify(initialCameras));
+
+    // Center the map in the viewport
+    function centerMap() {
+      const rect = container.getBoundingClientRect();
+      panX = rect.width / 2 - (mapImage.naturalWidth || 800) * scale / 2;
+      panY = rect.height / 2 - (mapImage.naturalHeight || 600) * scale / 2;
+      applyTransform();
+    }
+
+    if (mapImage.complete) {
+      centerMap();
+    } else {
+      mapImage.addEventListener('load', centerMap);
+    }
+
+    renderCameras();
+  </script>
+</body>
+</html>
