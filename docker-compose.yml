@@ -61,8 +61,13 @@ services:
       - cctv_network
     ports:
       - "3000:3000"
+    volumes:
+      - ./web_server:/app
+      - /app/node_modules
+    # ------------------------------
     environment:
-      GO2RTC_HOST: "frigate"
-      GO2RTC_PORT: "1984"
+      - GO2RTC_HOST="frigate"
+      - GO2RTC_PORT="1984"
+      - NODE_ENV=development   # Helps ensure Express doesn't cache EJS
     depends_on:
       - frigate

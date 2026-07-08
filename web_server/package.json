@@ -4,7 +4,8 @@
   "description": "Web server to display go2rtc camera footages",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "nodemon app.js"
   },
   "dependencies": {
     "axios": "^1.7.0",

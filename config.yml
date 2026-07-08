@@ -29,9 +29,9 @@ cameras:
             - detect
             - record
     detect:
-      enabled: true
+      enabled: false
     record:
-      enabled: true
+      enabled: false
 
   camera_106:
     enabled: true
@@ -53,7 +53,7 @@ cameras:
             - detect
             - record
     detect:
-      enabled: true
+      enabled: false
     record:
-      enabled: true
+      enabled: false
 version: 0.17-0
