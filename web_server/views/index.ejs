@@ -127,35 +127,40 @@
     const preview = document.getElementById('preview');
     const previewIframe = preview.querySelector('iframe');
     const previewLabel = preview.querySelector('.label');
-    let activeStream = '';
+    let currentStream = '';
     let timer;
+
+    // Pre-connect to the first stream so it's always loaded
+    const firstCard = document.querySelector('.card');
+    if (firstCard) {
+      currentStream = firstCard.dataset.stream;
+      previewIframe.src = 'http://localhost:1984/stream.html?src=' + currentStream + '&mode=mse';
+    }
 
     document.querySelectorAll('.card').forEach(card => {
       const stream = card.dataset.stream;
 
       card.addEventListener('mouseenter', (e) => {
         clearTimeout(timer);
-        activeStream = stream;
         previewLabel.textContent = stream;
-        previewIframe.src = 'http://localhost:1984/stream.html?src=' + stream + '&mode=mse';
+        if (stream !== currentStream) {
+          currentStream = stream;
+          previewIframe.src = 'http://localhost:1984/stream.html?src=' + stream + '&mode=mse';
+        }
         positionPreview(e.clientX, e.clientY);
         preview.classList.add('show');
       });
 
       card.addEventListener('mousemove', (e) => {
-        if (activeStream === stream) {
+        if (stream === currentStream) {
           positionPreview(e.clientX, e.clientY);
         }
       });
 
       card.addEventListener('mouseleave', () => {
-        if (activeStream === stream) {
-          timer = setTimeout(() => {
-            preview.classList.remove('show');
-            previewIframe.src = 'about:blank';
-            activeStream = '';
-          }, 200);
-        }
+        timer = setTimeout(() => {
+          preview.classList.remove('show');
+        }, 200);
       });
     });
 
