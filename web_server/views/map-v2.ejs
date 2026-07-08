@@ -1,0 +1,858 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Map Editor V2</title>
+  <script src="https://unpkg.com/konva@9/konva.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #1a1a2e; color: #fff;
+      overflow: hidden; height: 100vh;
+      display: flex; flex-direction: column;
+    }
+
+    #topbar {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 12px 6px 48px;
+      background: rgba(26,26,46,0.95);
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+      flex-shrink: 0; flex-wrap: wrap;
+      z-index: 10; min-height: 40px;
+    }
+    #topbar .title { font-weight: 600; font-size: 14px; color: rgba(255,255,255,0.7); }
+    #topbar .sep { width: 1px; height: 22px; background: rgba(255,255,255,0.08); }
+    #topbar button {
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.1);
+      color: rgba(255,255,255,0.7);
+      padding: 3px 10px; border-radius: 5px;
+      cursor: pointer; font-size: 12px;
+      transition: all 0.15s;
+    }
+    #topbar button:hover { background: rgba(255,255,255,0.12); color: #fff; }
+    #topbar button.primary { background: #2563eb; border-color: #3b82f6; color: #fff; }
+    #topbar button.primary:hover { background: #3b82f6; }
+    #topbar .zoom-level { font-size: 12px; color: rgba(255,255,255,0.4); min-width: 36px; text-align: center; font-family: monospace; }
+    #topbar #save-status { font-size: 11px; color: rgba(255,255,255,0.3); }
+
+    /* Camera chips in topbar */
+    .cam-chips { display: flex; gap: 4px; flex-wrap: wrap; margin-left: auto; }
+    .cam-chip {
+      display: flex; align-items: center; gap: 3px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 4px; padding: 2px 8px 2px 4px;
+      font-size: 11px; cursor: pointer; user-select: none;
+      color: rgba(255,255,255,0.5); transition: all 0.15s;
+    }
+    .cam-chip:hover { background: rgba(255,255,255,0.08); color: #fff; }
+    .cam-chip.active { border-color: #22c55e; background: rgba(34,197,94,0.12); color: #22c55e; }
+    .cam-chip .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+
+    /* Map canvas area */
+    #map-area {
+      flex: 1; position: relative; overflow: hidden;
+    }
+
+    /* Bottom pill toolbar */
+    #bottom-pill {
+      position: fixed;
+      bottom: 28px; left: 50%;
+      transform: translateX(-50%);
+      z-index: 100;
+      display: flex; align-items: center; gap: 4px;
+      background: rgba(26,26,46,0.92);
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 14px;
+      padding: 5px 6px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    }
+    #bottom-pill .pill-btn {
+      display: flex; align-items: center; gap: 5px;
+      padding: 6px 12px; border: none; border-radius: 9px;
+      background: transparent;
+      color: rgba(255,255,255,0.4);
+      font-size: 12px; font-weight: 500;
+      cursor: pointer; transition: all 0.15s;
+      white-space: nowrap;
+    }
+    #bottom-pill .pill-btn:hover { background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.7); }
+    #bottom-pill .pill-btn.active {
+      background: rgba(99,102,241,0.2);
+      color: #a5b4fc;
+      box-shadow: 0 0 0 1px rgba(99,102,241,0.2);
+    }
+    #bottom-pill .pill-divider { width: 1px; height: 20px; background: rgba(255,255,255,0.06); }
+
+    /* Stream selector (appears above pill when camera tool active) */
+    #stream-selector {
+      position: fixed;
+      bottom: 80px; left: 50%;
+      transform: translateX(-50%);
+      z-index: 99;
+      display: none; gap: 4px;
+      background: rgba(26,26,46,0.85);
+      backdrop-filter: blur(8px);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 10px;
+      padding: 6px 8px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+    }
+    #stream-selector.show { display: flex; flex-wrap: wrap; justify-content: center; max-width: 90vw; }
+    #stream-selector .s-chip {
+      display: flex; align-items: center; gap: 3px;
+      padding: 3px 10px; border-radius: 6px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.06);
+      color: rgba(255,255,255,0.5);
+      font-size: 11px; cursor: pointer; transition: all 0.15s;
+    }
+    #stream-selector .s-chip:hover { background: rgba(255,255,255,0.1); color: #fff; }
+    #stream-selector .s-chip.selected { border-color: #22c55e; background: rgba(34,197,94,0.1); color: #22c55e; }
+
+    /* Status bar */
+    #status-bar {
+      position: fixed;
+      bottom: 76px; left: 50%;
+      transform: translateX(-50%);
+      z-index: 100;
+      color: rgba(255,255,255,0.35);
+      font-size: 11px;
+      background: rgba(0,0,0,0.4);
+      backdrop-filter: blur(4px);
+      padding: 4px 12px;
+      border-radius: 6px;
+      border: 1px solid rgba(255,255,255,0.04);
+      pointer-events: none;
+      text-align: center;
+      white-space: nowrap;
+      display: none;
+    }
+    #status-bar.show { display: block; }
+    #status-bar .key {
+      color: rgba(255,255,255,0.5);
+      background: rgba(255,255,255,0.06);
+      padding: 0 4px; border-radius: 3px;
+      font-family: monospace; font-size: 9px;
+    }
+
+    /* Coord display */
+    #coord-display {
+      position: fixed;
+      bottom: 76px; right: 16px;
+      z-index: 100;
+      color: rgba(255,255,255,0.2);
+      font-size: 10px; font-family: monospace;
+      pointer-events: none;
+      text-align: right;
+    }
+
+    /* Camera preview popup */
+    #preview-popup {
+      display: none;
+      position: fixed; z-index: 999;
+      width: 320px;
+      background: #000;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.7);
+      pointer-events: none;
+      border: 1px solid rgba(255,255,255,0.06);
+    }
+    #preview-popup.show { display: block; }
+    #preview-popup .ratio {
+      position: relative; width: 100%;
+      padding-top: 56.25%;
+    }
+    #preview-popup iframe {
+      position: absolute; top: 0; left: 0;
+      width: 100%; height: 100%;
+      border: 0;
+    }
+    #preview-popup .plabel {
+      position: absolute; top: 0; left: 0;
+      padding: 4px 8px;
+      font-size: 10px; font-weight: 600;
+      background: rgba(0,0,0,0.7);
+      color: #fff; z-index: 1;
+    }
+
+    /* Wall count */
+    #info-overlay {
+      position: fixed;
+      top: 50px; right: 16px;
+      z-index: 100;
+      color: rgba(255,255,255,0.15);
+      font-size: 10px; font-family: monospace;
+      pointer-events: none;
+      text-align: right;
+      line-height: 1.6;
+    }
+  </style>
+</head>
+<body>
+  <%- include('partials/sidebar') %>
+
+  <!-- Top bar -->
+  <div id="topbar">
+    <span class="title">Map Editor</span>
+    <div class="sep"></div>
+    <button id="btn-zoom-out">−</button>
+    <span class="zoom-level" id="zoom-level">100%</span>
+    <button id="btn-zoom-in">+</button>
+    <button id="btn-zoom-reset">Reset</button>
+    <div class="sep"></div>
+    <button id="btn-save" class="primary">Save</button>
+    <span id="save-status"></span>
+    <div class="cam-chips" id="cam-chips">
+      <% (streams || []).forEach(s => { %>
+        <div class="cam-chip" data-stream="<%= s %>"><span class="dot"></span><%= s %></div>
+      <% }) %>
+    </div>
+  </div>
+
+  <!-- Map area -->
+  <div id="map-area"></div>
+
+  <!-- Bottom pill toolbar -->
+  <div id="bottom-pill">
+    <button class="pill-btn" data-tool="wall"><span>▤</span> Wall</button>
+    <div class="pill-divider"></div>
+    <button class="pill-btn" data-tool="camera"><span>⊙</span> Camera</button>
+  </div>
+
+  <!-- Stream selector (shown when Camera tool active) -->
+  <div id="stream-selector"></div>
+
+  <!-- Status bar -->
+  <div id="status-bar"></div>
+  <div id="coord-display"></div>
+  <div id="info-overlay"></div>
+
+  <!-- Camera preview -->
+  <div id="preview-popup">
+    <div class="ratio">
+      <div class="plabel"></div>
+      <iframe allow="autoplay"></iframe>
+    </div>
+  </div>
+
+  <script>
+    const streams = <%- JSON.stringify(streams || []) %>;
+    const initialCameras = <%- JSON.stringify(cameras || {}) %>;
+    const initialWalls = <%- JSON.stringify(walls || []) %>;
+
+    // ─── DOM ──────────────────────────────────────────────────────────────
+    const mapArea = document.getElementById('map-area');
+    const zoomLevelEl = document.getElementById('zoom-level');
+    const saveBtn = document.getElementById('btn-save');
+    const saveStatus = document.getElementById('save-status');
+    const statusBar = document.getElementById('status-bar');
+    const coordEl = document.getElementById('coord-display');
+    const infoEl = document.getElementById('info-overlay');
+    const bottomPill = document.getElementById('bottom-pill');
+    const streamSelector = document.getElementById('stream-selector');
+    const previewPopup = document.getElementById('preview-popup');
+    const previewFrame = previewPopup.querySelector('iframe');
+    const previewLabel = previewPopup.querySelector('.plabel');
+
+    // ─── State ────────────────────────────────────────────────────────────
+    let scale = 1, panX = 0, panY = 0;
+    let cameras = {};
+    let activeTool = null;       // 'wall' | 'camera' | null
+    let selectedStream = null;   // stream name for camera placement
+    let ctrlHeld = false;
+
+    // Wall state
+    const wallState = {
+      walls: [], drawing: null, idCounter: 0,
+    };
+
+    // Konva
+    let stage = null;
+    const layers = {};
+
+    // ─── Konva init ──────────────────────────────────────────────────────
+    function initStage() {
+      stage = new Konva.Stage({
+        container: 'map-area',
+        width: mapArea.offsetWidth,
+        height: mapArea.offsetHeight,
+      });
+
+      ['grid', 'wall', 'camera', 'draw', 'temp', 'ui'].forEach(name => {
+        layers[name] = new Konva.Layer();
+        stage.add(layers[name]);
+      });
+
+      stage.position({ x: panX, y: panY });
+      stage.scale({ x: scale, y: scale });
+
+      drawGrid();
+      loadWalls();
+      renderCameras();
+      bindStageEvents();
+      updateInfo();
+    }
+
+    function drawGrid() {
+      const w = stage.width(), h = stage.height(), step = 40;
+      const minP = [], majP = [];
+      for (let x = -step * 5; x <= w + step * 5; x += step) {
+        (x % (step * 5) === 0 ? majP : minP).push(x, -step * 5, x, h + step * 5);
+      }
+      for (let y = -step * 5; y <= h + step * 5; y += step) {
+        (y % (step * 5) === 0 ? majP : minP).push(-step * 5, y, w + step * 5, y);
+      }
+      layers.grid.add(new Konva.Line({ points: minP, stroke: 'rgba(255,255,255,0.03)', strokeWidth: 1 }));
+      layers.grid.add(new Konva.Line({ points: majP, stroke: 'rgba(255,255,255,0.06)', strokeWidth: 1 }));
+      layers.grid.batchDraw();
+    }
+
+    function resizeStage() {
+      if (!stage) return;
+      stage.width(mapArea.offsetWidth);
+      stage.height(mapArea.offsetHeight);
+      layers.grid.destroyChildren();
+      drawGrid();
+    }
+
+    // ─── Zoom / Pan ─────────────────────────────────────────────────────
+    function applyTransform() {
+      stage.position({ x: panX, y: panY });
+      stage.scale({ x: scale, y: scale });
+      zoomLevelEl.textContent = Math.round(scale * 100) + '%';
+    }
+
+    function zoomAt(newScale, cx, cy) {
+      const rect = mapArea.getBoundingClientRect();
+      const mx = cx - rect.left, my = cy - rect.top;
+      const wx = (mx - panX) / scale, wy = (my - panY) / scale;
+      scale = Math.max(0.1, Math.min(10, newScale));
+      panX = mx - wx * scale;
+      panY = my - wy * scale;
+      applyTransform();
+    }
+
+    // ─── Geometry ────────────────────────────────────────────────────────
+    function dist(a, b) { return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2); }
+    function closestOnSegment(px, py, ax, ay, bx, by) {
+      const dx = bx - ax, dy = by - ay, lenSq = dx * dx + dy * dy;
+      if (lenSq === 0) return { x: ax, y: ay, t: 0 };
+      let t = ((px - ax) * dx + (py - ay) * dy) / lenSq;
+      t = Math.max(0, Math.min(1, t));
+      return { x: ax + t * dx, y: ay + t * dy, t };
+    }
+    function midpoint(a, b) { return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; }
+    function perpOffset(a, b, off) {
+      const m = midpoint(a, b), dx = b.x - a.x, dy = b.y - a.y, len = Math.sqrt(dx * dx + dy * dy);
+      if (len < 0.01) return { x: m.x, y: m.y + off };
+      return { x: m.x - (dy / len) * off, y: m.y + (dx / len) * off };
+    }
+    function formatLen(px) { const m = px / 40; return m < 10 ? m.toFixed(1) + 'm' : Math.round(m) + 'm'; }
+    function constrainAngle(from, to) {
+      const dx = to.x - from.x, dy = to.y - from.y;
+      const a = Math.atan2(dy, dx);
+      const snapped = Math.round(a / (Math.PI / 4)) * (Math.PI / 4);
+      const len = Math.sqrt(dx * dx + dy * dy);
+      return { x: from.x + Math.cos(snapped) * len, y: from.y + Math.sin(snapped) * len };
+    }
+
+    // ─── Wall CRUD ──────────────────────────────────────────────────────
+    function createWallLine(points, closed) {
+      const line = new Konva.Line({
+        points: points.flatMap(p => [p.x, p.y]),
+        stroke: '#e2e2ec', strokeWidth: 2.5,
+        hitStrokeWidth: 12, closed,
+        lineCap: 'round', lineJoin: 'round',
+        perfectDrawEnabled: false,
+      });
+      line.on('mouseenter', () => { if (activeTool === 'wall') line.stroke('#9298f0'); layers.wall.batchDraw(); });
+      line.on('mouseleave', () => { line.stroke('#e2e2ec'); layers.wall.batchDraw(); });
+      return line;
+    }
+
+    function addWall(points, closed) {
+      const id = 'w' + (wallState.idCounter++);
+      const line = createWallLine(points, closed);
+      const dots = points.map(p => new Konva.Circle({ x: p.x, y: p.y, radius: 2, fill: 'rgba(255,255,255,0.2)', perfectDrawEnabled: false }));
+      const wall = { id, points: points.map(p => ({ ...p })), closed, line, dots };
+      wallState.walls.push(wall);
+      layers.wall.add(line);
+      dots.forEach(d => layers.wall.add(d));
+      layers.wall.batchDraw();
+      updateInfo();
+      return wall;
+    }
+
+    function splitWallAtPoint(wall, pt) {
+      const pts = wall.points, len = wall.closed ? pts.length : pts.length - 1;
+      let bestIdx = -1, bestD = Infinity;
+      for (let i = 0; i < len; i++) {
+        const a = pts[i], b = pts[(i + 1) % pts.length];
+        const r = closestOnSegment(pt.x, pt.y, a.x, a.y, b.x, b.y);
+        const d = dist(pt, r);
+        if (d < bestD) { bestD = d; bestIdx = i; }
+      }
+      if (bestIdx === -1 || bestD > 8) return null;
+      const a = pts[bestIdx], b = pts[(bestIdx + 1) % pts.length];
+      const r = closestOnSegment(pt.x, pt.y, a.x, a.y, b.x, b.y);
+      if (dist(r, a) < 10 || dist(r, b) < 10) return null;
+      const np = { x: r.x, y: r.y };
+      pts.splice(bestIdx + 1, 0, np);
+      wall.line.points(pts.flatMap(p => [p.x, p.y]));
+      wall.dots.forEach(d => d.destroy());
+      wall.dots = pts.map(p => new Konva.Circle({ x: p.x, y: p.y, radius: 2, fill: 'rgba(255,255,255,0.2)', perfectDrawEnabled: false }));
+      wall.dots.forEach(d => layers.wall.add(d));
+      layers.wall.batchDraw();
+      return np;
+    }
+
+    // ─── Snap ────────────────────────────────────────────────────────────
+    function findNearbyVertex(pt) {
+      let best = null, bestD = 12;
+      for (const w of wallState.walls) { for (const p of w.points) { const d = dist(pt, p); if (d < bestD) { bestD = d; best = p; } } }
+      return best;
+    }
+    function findNearbyWallSeg(pt) {
+      let best = null, bestD = 8;
+      for (const w of wallState.walls) {
+        const pts = w.points, len = w.closed ? pts.length : pts.length - 1;
+        for (let i = 0; i < len; i++) {
+          const a = pts[i], b = pts[(i + 1) % pts.length];
+          const r = closestOnSegment(pt.x, pt.y, a.x, a.y, b.x, b.y);
+          if (dist(r, a) < 10 || dist(r, b) < 10) continue;
+          const d = dist(pt, r);
+          if (d < bestD) { bestD = d; best = { ...r, wallId: w.id, segIdx: i }; }
+        }
+      }
+      return best;
+    }
+    function snapPoint(raw) {
+      const v = findNearbyVertex(raw);
+      if (v) return { ...v, snapped: 'v' };
+      const s = findNearbyWallSeg(raw);
+      if (s) return { x: s.x, y: s.y, snapped: 'w', data: s };
+      return { x: raw.x, y: raw.y, snapped: false };
+    }
+
+    // ─── Drawing state ──────────────────────────────────────────────────
+    let startDot = null, startRing = null;
+    function showStartDot(pt) {
+      hideStartDot();
+      startRing = new Konva.Circle({ x: pt.x, y: pt.y, radius: 7, stroke: 'rgba(129,140,248,0.35)', strokeWidth: 1.5, dash: [3, 3], perfectDrawEnabled: false });
+      startDot = new Konva.Circle({ x: pt.x, y: pt.y, radius: 3.5, fill: '#818cf8', perfectDrawEnabled: false });
+      layers.ui.add(startRing); layers.ui.add(startDot); layers.ui.batchDraw();
+    }
+    function hideStartDot() {
+      if (startDot) { startDot.destroy(); startDot = null; }
+      if (startRing) { startRing.destroy(); startRing = null; }
+      layers.ui.batchDraw();
+    }
+    function startDrawing(pt) {
+      wallState.drawing = { points: [{ ...pt }], segmentLines: [] };
+      layers.draw.destroyChildren();
+      clearTemp();
+      showStartDot(pt);
+      setStatus('Click to place · click start to close · <span class="key">Enter</span> finish · <span class="key">Esc</span> cancel');
+    }
+    function placeVertex(pt) {
+      if (!wallState.drawing) { startDrawing(pt); return; }
+      const prev = wallState.drawing.points[wallState.drawing.points.length - 1];
+      wallState.drawing.points.push({ ...pt });
+      const seg = new Konva.Line({ points: [prev.x, prev.y, pt.x, pt.y], stroke: 'rgba(255,255,255,0.25)', strokeWidth: 2.5, lineCap: 'round', perfectDrawEnabled: false });
+      wallState.drawing.segmentLines.push(seg);
+      layers.draw.add(seg);
+      layers.draw.batchDraw();
+    }
+    function finishDrawing(closed) {
+      if (!wallState.drawing || wallState.drawing.points.length < 2) { cancelDrawing(); return; }
+      const pts = wallState.drawing.points;
+      const clean = [pts[0]];
+      for (let i = 1; i < pts.length; i++) { if (dist(pts[i], pts[i - 1]) > 0.5) clean.push(pts[i]); }
+      if (clean.length < 2) { cancelDrawing(); return; }
+      wallState.drawing.segmentLines.forEach(l => l.destroy());
+      wallState.drawing = null;
+      layers.draw.destroyChildren();
+      clearTemp();
+      hideStartDot();
+      addWall(clean, closed);
+      setStatus('Wall placed');
+    }
+    function cancelDrawing() {
+      if (wallState.drawing) { wallState.drawing.segmentLines.forEach(l => l.destroy()); wallState.drawing = null; }
+      layers.draw.destroyChildren();
+      clearTemp();
+      hideStartDot();
+    }
+    function clearTemp() { layers.temp.destroyChildren(); layers.temp.batchDraw(); }
+    function getWorldPos(evt) {
+      const rect = mapArea.getBoundingClientRect();
+      return {
+        x: (evt.clientX - rect.left - panX) / scale,
+        y: (evt.clientY - rect.top - panY) / scale,
+      };
+    }
+
+    function drawTempLine(from, to, constrained) {
+      clearTemp();
+      const g = new Konva.Group();
+      const color = constrained ? '#818cf8' : 'rgba(255,255,255,0.35)';
+      g.add(new Konva.Line({ points: [from.x, from.y, to.x, to.y], stroke: color, strokeWidth: 2, dash: constrained ? [] : [5, 4], lineCap: 'round', perfectDrawEnabled: false }));
+      if (!constrained && dist(from, to) > 2) {
+        const len = dist(from, to), lp = perpOffset(from, to, 18);
+        const txt = new Konva.Text({ x: lp.x, y: lp.y, text: formatLen(len), fontSize: 11, fontFamily: 'monospace', fill: 'rgba(255,255,255,0.8)', align: 'center', perfectDrawEnabled: false });
+        txt.offsetX(txt.width() / 2); txt.offsetY(txt.height() / 2);
+        const pad = 3;
+        g.add(new Konva.Rect({ x: lp.x - txt.width() / 2 - pad, y: lp.y - txt.height() / 2 - pad, width: txt.width() + pad * 2, height: txt.height() + pad * 2, fill: 'rgba(0,0,0,0.55)', cornerRadius: 3, perfectDrawEnabled: false }));
+        g.add(txt);
+      }
+      if (constrained) {
+        g.add(new Konva.Circle({ x: to.x, y: to.y, radius: 5, stroke: '#818cf8', strokeWidth: 1.5, fill: 'rgba(129,140,248,0.1)', perfectDrawEnabled: false }));
+      }
+      layers.temp.add(g);
+      layers.temp.batchDraw();
+    }
+
+    // ─── Cameras ─────────────────────────────────────────────────────────
+    let previewTimer = null;
+    let previewStream = '';
+
+    function renderCameras() {
+      layers.camera.destroyChildren();
+      for (const [stream, pos] of Object.entries(cameras)) {
+        const g = new Konva.Group({ x: pos.x, y: pos.y, draggable: true });
+        const bg = new Konva.Circle({ radius: 16, fill: 'rgba(0,0,0,0.4)', stroke: 'rgba(34,197,94,0.5)', strokeWidth: 1.5, perfectDrawEnabled: false });
+        const icon = new Konva.Path({
+          data: 'M20 7l-6 4 6 4V7z M4 5h12v14H4z',
+          fill: '#22c55e', stroke: '#22c55e', strokeWidth: 1,
+          scaleX: 1.2, scaleY: 1.2, offsetX: -2, offsetY: -2,
+          perfectDrawEnabled: false,
+        });
+        const label = new Konva.Text({
+          text: stream, fontSize: 9, fontFamily: 'system-ui',
+          fill: 'rgba(255,255,255,0.6)',
+          align: 'center',
+          y: 18,
+          perfectDrawEnabled: false,
+        });
+        label.offsetX(label.width() / 2);
+        g.add(bg); g.add(icon); g.add(label);
+
+        g.on('mouseenter', () => { showPreview(stream, g); });
+        g.on('mouseleave', () => { clearTimeout(previewTimer); previewTimer = setTimeout(hidePreview, 200); });
+        g.on('dragmove', () => { if (previewStream === stream) positionPreview(g); });
+        g.on('dragend', () => {
+          cameras[stream] = { x: g.x(), y: g.y() };
+          saveStatus.textContent = 'unsaved changes';
+        });
+        g.on('dblclick dbltap', () => {
+          if (confirm('Remove camera ' + stream + '?')) {
+            delete cameras[stream];
+            renderCameras();
+            saveStatus.textContent = 'unsaved changes';
+          }
+        });
+
+        layers.camera.add(g);
+      }
+      layers.camera.batchDraw();
+      updateInfo();
+    }
+
+    function placeCamera(stream, pos) {
+      if (stream in cameras) {
+        cameras[stream] = { x: pos.x, y: pos.y };
+      } else {
+        cameras[stream] = { x: pos.x, y: pos.y };
+      }
+      renderCameras();
+      saveStatus.textContent = 'unsaved changes';
+    }
+
+    function showPreview(stream, group) {
+      clearTimeout(previewTimer);
+      previewStream = stream;
+      previewLabel.textContent = stream;
+      previewFrame.src = 'http://localhost:1984/stream.html?src=' + stream + '&mode=mse';
+      positionPreview(group);
+      previewPopup.classList.add('show');
+    }
+
+    function hidePreview() {
+      previewStream = '';
+      previewPopup.classList.remove('show');
+    }
+
+    function positionPreview(group) {
+      const abs = group.getAbsolutePosition();
+      const rect = mapArea.getBoundingClientRect();
+      const pw = 320, ph = 180;
+      let x = rect.left + abs.x + 20;
+      let y = rect.top + abs.y - ph / 2;
+      const maxX = window.innerWidth - pw - 16;
+      const maxY = window.innerHeight - ph - 16;
+      if (x > maxX) x = rect.left + abs.x - pw - 20;
+      if (x < 16) x = 16;
+      if (y < 16) y = 16;
+      if (y > maxY) y = maxY;
+      previewPopup.style.left = x + 'px';
+      previewPopup.style.top = y + 'px';
+    }
+
+    // ─── Stage events ────────────────────────────────────────────────────
+    function bindStageEvents() {
+      stage.on('click', (e) => {
+        if (e.evt.button !== 0) return;
+        const raw = getWorldPos(e.evt);
+
+        if (activeTool === 'wall') {
+          const snapped = snapPoint(raw);
+          if (wallState.drawing && wallState.drawing.points.length >= 2) {
+            const start = wallState.drawing.points[0];
+            if ((snapped.snapped === 'v' && dist(snapped, start) < 12) || dist(raw, start) < 12) { finishDrawing(true); return; }
+          }
+          let effPt = snapped;
+          if (snapped.snapped === 'w' && snapped.data) {
+            const w = wallState.walls.find(x => x.id === snapped.data.wallId);
+            if (w) {
+              const np = splitWallAtPoint(w, snapped);
+              if (np) effPt = { x: np.x, y: np.y, snapped: 'w', data: null };
+              else { const v = findNearbyVertex(snapped); if (v) effPt = { ...v, snapped: 'v', data: null }; }
+            }
+          }
+          if (wallState.drawing && wallState.drawing.points.length >= 1 && effPt.snapped === 'w') { placeVertex(effPt); finishDrawing(false); return; }
+          placeVertex(effPt);
+        } else if (activeTool === 'camera') {
+          if (!selectedStream) {
+            setStatus('Select a camera stream from the list first');
+            return;
+          }
+          placeCamera(selectedStream, { x: raw.x, y: raw.y });
+          setStatus('Camera placed: ' + selectedStream);
+          selectedStream = null;
+          updateStreamSelector();
+        }
+      });
+
+      stage.on('mousemove', (e) => {
+        const raw = getWorldPos(e.evt);
+        const mx = (raw.x / 40).toFixed(1), my = (raw.y / 40).toFixed(1);
+        coordEl.textContent = mx + 'm, ' + my + 'm';
+
+        if (activeTool === 'wall' && wallState.drawing) {
+          const snapped = snapPoint(raw);
+          let target = snapped;
+          if (ctrlHeld) {
+            const last = wallState.drawing.points[wallState.drawing.points.length - 1];
+            target = constrainAngle(last, target);
+          }
+          drawTempLine(wallState.drawing.points[wallState.drawing.points.length - 1], target, ctrlHeld);
+        }
+      });
+
+      // Pan on drag (middle button always, left button only when no tool active)
+      let panning = false, pStartX, pStartY, pPanX, pPanY;
+      stage.on('mousedown', (e) => {
+        if (e.evt.button === 1 || (e.evt.button === 0 && !activeTool && e.target === stage)) {
+          panning = true;
+          pStartX = e.evt.clientX; pStartY = e.evt.clientY;
+          pPanX = panX; pPanY = panY;
+          mapArea.style.cursor = 'grabbing';
+        }
+      });
+      stage.on('mousemove', (e) => {
+        if (panning) {
+          panX = pPanX + (e.evt.clientX - pStartX);
+          panY = pPanY + (e.evt.clientY - pStartY);
+          applyTransform();
+        }
+      });
+      stage.on('mouseup', () => { panning = false; mapArea.style.cursor = ''; });
+      stage.on('mouseleave', () => { panning = false; mapArea.style.cursor = ''; });
+
+      // Zoom via scroll
+      stage.on('wheel', (e) => {
+        e.evt.preventDefault();
+        const delta = e.evt.deltaY > 0 ? -0.1 : 0.1;
+        zoomAt(scale + delta, e.evt.clientX, e.evt.clientY);
+      });
+    }
+
+    // ─── Tools ───────────────────────────────────────────────────────────
+    function setStatus(text) {
+      statusBar.innerHTML = text;
+      statusBar.classList.toggle('show', !!text);
+    }
+
+    function updateInfo() {
+      const wc = wallState.walls.length;
+      const cc = Object.keys(cameras).length;
+      infoEl.textContent = 'Walls: ' + wc + '  Cameras: ' + cc;
+    }
+
+    function updateStreamSelector() {
+      streamSelector.innerHTML = '';
+      streams.forEach(s => {
+        const chip = document.createElement('div');
+        chip.className = 's-chip' + (s === selectedStream ? ' selected' : '');
+        chip.textContent = s;
+        chip.addEventListener('click', () => {
+          selectedStream = s;
+          updateStreamSelector();
+          setStatus('Click on map to place: ' + s);
+        });
+        streamSelector.appendChild(chip);
+      });
+    }
+
+    const pillBtns = bottomPill.querySelectorAll('.pill-btn');
+    pillBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const tool = btn.dataset.tool;
+        if (activeTool === tool) {
+          // Toggle off
+          activeTool = null;
+          pillBtns.forEach(b => b.classList.remove('active'));
+          cancelDrawing();
+          setStatus('');
+          streamSelector.classList.remove('show');
+          selectedStream = null;
+          mapArea.style.cursor = 'default';
+        } else {
+          activeTool = tool;
+          pillBtns.forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+
+          if (tool === 'wall') {
+            streamSelector.classList.remove('show');
+            selectedStream = null;
+            setStatus('Click to place first wall point · <span class="key">Esc</span> exit');
+            mapArea.style.cursor = 'crosshair';
+          } else if (tool === 'camera') {
+            cancelDrawing();
+            streamSelector.classList.add('show');
+            updateStreamSelector();
+            setStatus('Select a camera stream, then click on map to place');
+            mapArea.style.cursor = 'crosshair';
+          }
+        }
+      });
+    });
+
+    // ─── Key events ──────────────────────────────────────────────────────
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Control') { ctrlHeld = true; }
+      if (activeTool === 'wall') {
+        if (e.key === 'Escape') { if (wallState.drawing) { cancelDrawing(); } else { activeTool = null; pillBtns.forEach(b => b.classList.remove('active')); setStatus(''); mapArea.style.cursor = 'default'; } e.preventDefault(); }
+        if (e.key === 'Enter') { if (wallState.drawing && wallState.drawing.points.length >= 2) { finishDrawing(false); } e.preventDefault(); }
+        if (e.key === 'Backspace') {
+          if (wallState.drawing) {
+            if (wallState.drawing.points.length > 1) {
+              const seg = wallState.drawing.segmentLines.pop();
+              if (seg) seg.destroy();
+              wallState.drawing.points.pop();
+              layers.draw.batchDraw();
+              const last = wallState.drawing.points[wallState.drawing.points.length - 1];
+              const snapped = snapPoint(last);
+              drawTempLine(last, ctrlHeld ? constrainAngle(last, snapped) : snapped, ctrlHeld);
+            } else { cancelDrawing(); }
+            e.preventDefault();
+          }
+        }
+      }
+      if (activeTool === 'camera' && e.key === 'Escape') {
+        activeTool = null;
+        pillBtns.forEach(b => b.classList.remove('active'));
+        streamSelector.classList.remove('show');
+        selectedStream = null;
+        setStatus('');
+        mapArea.style.cursor = 'default';
+        e.preventDefault();
+      }
+    });
+    document.addEventListener('keyup', (e) => { if (e.key === 'Control') ctrlHeld = false; });
+
+    // ─── Cam-chips (topbar) ──────────────────────────────────────────────
+    document.querySelectorAll('.cam-chip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        const s = chip.dataset.stream;
+        if (s in cameras) {
+          delete cameras[s];
+          renderCameras();
+          saveStatus.textContent = 'unsaved changes';
+        } else {
+          // Place at center of viewport
+          const rect = mapArea.getBoundingClientRect();
+          const cx = (rect.width / 2 - panX) / scale;
+          const cy = (rect.height / 2 - panY) / scale;
+          placeCamera(s, { x: cx, y: cy });
+        }
+      });
+    });
+
+    // ─── Save ────────────────────────────────────────────────────────────
+    saveBtn.addEventListener('click', async () => {
+      try {
+        const r1 = await fetch('/api/cameras', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(cameras),
+        });
+        if (!r1.ok) throw new Error('Camera save failed');
+        const wallData = wallState.walls.map(w => ({ id: w.id, points: w.points, closed: w.closed }));
+        const r2 = await fetch('/api/walls', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(wallData),
+        });
+        if (!r2.ok) throw new Error('Wall save failed');
+        saveStatus.textContent = 'saved';
+        setTimeout(() => saveStatus.textContent = '', 2000);
+      } catch (err) {
+        saveStatus.textContent = 'error: ' + err.message;
+      }
+    });
+
+    // ─── Zoom buttons ────────────────────────────────────────────────────
+    document.getElementById('btn-zoom-in').addEventListener('click', () => {
+      const rect = mapArea.getBoundingClientRect();
+      zoomAt(scale + 0.2, rect.left + rect.width / 2, rect.top + rect.height / 2);
+    });
+    document.getElementById('btn-zoom-out').addEventListener('click', () => {
+      const rect = mapArea.getBoundingClientRect();
+      zoomAt(scale - 0.2, rect.left + rect.width / 2, rect.top + rect.height / 2);
+    });
+    document.getElementById('btn-zoom-reset').addEventListener('click', () => {
+      scale = 1; panX = 0; panY = 0;
+      applyTransform();
+    });
+
+    // ─── Load initial data ──────────────────────────────────────────────
+    function loadWalls() {
+      if (initialWalls && initialWalls.length > 0) {
+        initialWalls.forEach(w => addWall(w.points, w.closed));
+      }
+    }
+
+    // ─── Init ────────────────────────────────────────────────────────────
+    cameras = JSON.parse(JSON.stringify(initialCameras));
+    initStage();
+
+    function centerMap() {
+      const rect = mapArea.getBoundingClientRect();
+      panX = rect.width / 2;
+      panY = rect.height / 2;
+      scale = 1;
+      applyTransform();
+    }
+    centerMap();
+
+    window.addEventListener('resize', resizeStage);
+
+    console.log('Map V2 ready');
+  </script>
+</body>
+</html>

@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Map Editor</title>
+  <script src="https://unpkg.com/konva@9/konva.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -129,6 +130,66 @@
       pointer-events: none;
     }
 
+    /* Konva wall canvas */
+    #konva-container {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
+      z-index: 3;
+      overflow: hidden;
+    }
+    #konva-container.active { pointer-events: auto; }
+    #konva-container canvas { display: block; }
+
+    /* Wall mode indicator */
+    #wall-status {
+      position: absolute;
+      top: 8px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 20;
+      color: rgba(255,255,255,0.5);
+      font-size: 12px;
+      background: rgba(0,0,0,0.6);
+      backdrop-filter: blur(4px);
+      padding: 4px 12px;
+      border-radius: 6px;
+      border: 1px solid rgba(255,255,255,0.06);
+      pointer-events: none;
+      white-space: nowrap;
+      display: none;
+    }
+    #wall-status.show { display: block; }
+    #wall-status .key {
+      color: rgba(255,255,255,0.6);
+      background: rgba(255,255,255,0.07);
+      padding: 0 4px;
+      border-radius: 3px;
+      font-family: monospace;
+      font-size: 10px;
+    }
+
+    /* Toolbar wall sub-controls */
+    .wall-sub {
+      display: none;
+      align-items: center;
+      gap: 6px;
+    }
+    .wall-sub.show { display: flex; }
+    .wall-sub button {
+      background: #3a3a3a;
+      border: 1px solid #555;
+      color: #fff;
+      padding: 4px 10px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .wall-sub button:hover { background: #4a4a4a; }
+    .wall-sub button.active { background: #2563eb; border-color: #3b82f6; }
+    .wall-sub .hint { font-size: 11px; color: #888; white-space: nowrap; }
+
     /* Preview overlay */
     #preview {
       display: none;
@@ -179,7 +240,13 @@
     <button id="btn-save" class="primary">Save</button>
     <span id="save-status" style="font-size:12px;color:#888;"></span>
     <div class="sep"></div>
-    <!--<a href="/" style="color:#888;font-size:13px;text-decoration:none;">&larr; Cameras</a>-->
+    <button id="btn-wall-mode">🧱 Walls</button>
+    <div class="wall-sub" id="wall-sub">
+      <div class="sep"></div>
+      <button id="btn-wall-draw" class="active">✏️ Draw</button>
+      <button id="btn-wall-clear">🗑️ Clear</button>
+      <span class="hint" id="wall-hint">Click to place points</span>
+    </div>
     <div class="cam-pool">
       <% streams.forEach(stream => { %>
         <div class="cam-chip" data-stream="<%= stream %>" title="Click to add/remove">
@@ -194,10 +261,12 @@
   </div>
 
   <div id="map-container">
+    <div id="wall-status"></div>
     <div id="map-transform">
       <div class="grid-bg"></div>
       <img id="map-image" src="/oc.png" alt="Building Plan" />
     </div>
+    <div id="konva-container"></div>
   </div>
 
   <div id="preview">
@@ -247,6 +316,10 @@
 
     function applyTransform() {
       transform.style.transform = `translate(${panX}px, ${panY}px) scale(${scale})`;
+      if (wallStage) {
+        wallStage.position({ x: panX, y: panY });
+        wallStage.scale({ x: scale, y: scale });
+      }
     }
 
     function renderCameras() {
@@ -443,6 +516,7 @@
     container.addEventListener('mousedown', (e) => {
       if (e.target.closest('.camera-icon')) return;
       if (e.target.closest('#toolbar')) return;
+      if (e.target.closest('#konva-container') && wallMode) return;
       if (e.button !== 0) return;
 
       panning = true;
@@ -486,18 +560,439 @@
     // --- Save ---
     saveBtn.addEventListener('click', async () => {
       try {
-        const res = await fetch('/api/cameras', {
+        const r1 = await fetch('/api/cameras', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(cameras),
         });
-        if (!res.ok) throw new Error('Save failed');
+        if (!r1.ok) throw new Error('Save failed');
+        const wallData = wallState.walls.map(w => ({
+          id: w.id,
+          points: w.points,
+          closed: w.closed,
+        }));
+        const r2 = await fetch('/api/walls', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(wallData),
+        });
+        if (!r2.ok) throw new Error('Walls save failed');
         saveStatus.textContent = 'saved';
         setTimeout(() => { saveStatus.textContent = ''; }, 2000);
       } catch (err) {
         saveStatus.textContent = 'error: ' + err.message;
       }
     });
+
+    // ─── Wall Editor ─────────────────────────────────────────────────────
+    const initialWalls = <%- JSON.stringify(walls) %>;
+    let wallMode = false;
+    let wallDrawMode = false;
+    let wallStage = null;
+    let wallLayers = {};
+    let ctrlHeld = false;
+
+    const wallState = {
+      walls: [],
+      drawing: null,
+      idCounter: 0,
+      wallsDirty: false,
+    };
+
+    // --- Konva init ---
+    let konvaInited = false;
+    function initKonva() {
+      if (konvaInited) return;
+      konvaInited = true;
+
+      wallStage = new Konva.Stage({
+        container: 'konva-container',
+        width: container.offsetWidth,
+        height: container.offsetHeight,
+      });
+      wallStage.position({ x: panX, y: panY });
+      wallStage.scale({ x: scale, y: scale });
+
+      wallLayers.wall = new Konva.Layer();
+      wallLayers.draw = new Konva.Layer();
+      wallLayers.temp = new Konva.Layer();
+      wallLayers.ui = new Konva.Layer();
+      wallStage.add(wallLayers.wall);
+      wallStage.add(wallLayers.draw);
+      wallStage.add(wallLayers.temp);
+      wallStage.add(wallLayers.ui);
+
+      loadInitialWalls();
+      bindKonvaEvents();
+    }
+
+    function resizeKonva() {
+      if (!wallStage) return;
+      const w = container.offsetWidth;
+      const h = container.offsetHeight;
+      wallStage.width(w);
+      wallStage.height(h);
+    }
+
+    // --- Wall CRUD ---
+    function createWallLine(points, closed) {
+      const flat = points.flatMap(p => [p.x, p.y]);
+      const line = new Konva.Line({
+        points: flat, stroke: '#e2e2ec', strokeWidth: 2.5,
+        hitStrokeWidth: 12, closed, lineCap: 'round', lineJoin: 'round',
+        perfectDrawEnabled: false,
+      });
+      line.on('mouseenter', () => { if (wallMode && wallDrawMode) { line.stroke('#9298f0'); wallLayers.wall.batchDraw(); } });
+      line.on('mouseleave', () => { line.stroke('#e2e2ec'); wallLayers.wall.batchDraw(); });
+      return line;
+    }
+
+    function addWall(points, closed) {
+      const id = 'w' + (wallState.idCounter++);
+      const line = createWallLine(points, closed);
+      const dots = points.map(p => new Konva.Circle({ x: p.x, y: p.y, radius: 2, fill: 'rgba(255,255,255,0.25)', perfectDrawEnabled: false }));
+      const wall = { id, points: points.map(p => ({ ...p })), closed, line, dots };
+      wallState.walls.push(wall);
+      wallLayers.wall.add(line);
+      dots.forEach(d => wallLayers.wall.add(d));
+      wallLayers.wall.batchDraw();
+      wallState.wallsDirty = true;
+      return wall;
+    }
+
+    function removeWallById(id) {
+      const idx = wallState.walls.findIndex(w => w.id === id);
+      if (idx === -1) return;
+      const w = wallState.walls[idx];
+      w.line.destroy();
+      w.dots.forEach(d => d.destroy());
+      wallState.walls.splice(idx, 1);
+      wallLayers.wall.batchDraw();
+      wallState.wallsDirty = true;
+    }
+
+    function splitWallAtPoint(wall, worldPt) {
+      const pts = wall.points;
+      const len = wall.closed ? pts.length : pts.length - 1;
+      let bestIdx = -1, bestDist = Infinity;
+      for (let i = 0; i < len; i++) {
+        const a = pts[i], b = pts[(i + 1) % pts.length];
+        const res = closestOnSegment(worldPt.x, worldPt.y, a.x, a.y, b.x, b.y);
+        const d = dist(worldPt, res);
+        if (d < bestDist) { bestDist = d; bestIdx = i; }
+      }
+      if (bestIdx === -1 || bestDist > 8) return null;
+      const a = pts[bestIdx], b = pts[(bestIdx + 1) % pts.length];
+      const res = closestOnSegment(worldPt.x, worldPt.y, a.x, a.y, b.x, b.y);
+      const snapThresh = 10;
+      if (dist(res, a) < snapThresh || dist(res, b) < snapThresh) return null;
+      const newPt = { x: res.x, y: res.y };
+      pts.splice(bestIdx + 1, 0, newPt);
+      wall.line.points(pts.flatMap(p => [p.x, p.y]));
+      wall.dots.forEach(d => d.destroy());
+      wall.dots = pts.map(p => new Konva.Circle({ x: p.x, y: p.y, radius: 2, fill: 'rgba(255,255,255,0.25)', perfectDrawEnabled: false }));
+      wall.dots.forEach(d => wallLayers.wall.add(d));
+      wallLayers.wall.batchDraw();
+      return newPt;
+    }
+
+    // --- Geometry ---
+    function dist(a, b) { return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2); }
+    function closestOnSegment(px, py, ax, ay, bx, by) {
+      const dx = bx - ax, dy = by - ay, lenSq = dx * dx + dy * dy;
+      if (lenSq === 0) return { x: ax, y: ay, t: 0 };
+      let t = ((px - ax) * dx + (py - ay) * dy) / lenSq;
+      t = Math.max(0, Math.min(1, t));
+      return { x: ax + t * dx, y: ay + t * dy, t };
+    }
+    function midpoint(a, b) { return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; }
+    function perpOffset(a, b, off) {
+      const m = midpoint(a, b), dx = b.x - a.x, dy = b.y - a.y, len = Math.sqrt(dx*dx+dy*dy);
+      if (len < 0.01) return { x: m.x, y: m.y + off };
+      return { x: m.x - (dy/len)*off, y: m.y + (dx/len)*off };
+    }
+    function formatLen(px) { const m = px / 40; return m < 10 ? m.toFixed(1) + 'm' : Math.round(m) + 'm'; }
+    function constrainAngle(from, to) {
+      const dx = to.x - from.x, dy = to.y - from.y;
+      const angle = Math.atan2(dy, dx);
+      const snapped = Math.round(angle / (Math.PI / 4)) * (Math.PI / 4);
+      const len = Math.sqrt(dx*dx + dy*dy);
+      return { x: from.x + Math.cos(snapped) * len, y: from.y + Math.sin(snapped) * len };
+    }
+
+    // --- Snap ---
+    function findNearbyVertex(pt) {
+      let best = null, bestD = 12;
+      for (const w of wallState.walls) { for (const p of w.points) { const d = dist(pt, p); if (d < bestD) { bestD = d; best = p; } } }
+      return best;
+    }
+    function findNearbyWallSeg(pt) {
+      let best = null, bestD = 8;
+      for (const w of wallState.walls) {
+        const pts = w.points, len = w.closed ? pts.length : pts.length - 1;
+        for (let i = 0; i < len; i++) {
+          const a = pts[i], b = pts[(i + 1) % pts.length];
+          const res = closestOnSegment(pt.x, pt.y, a.x, a.y, b.x, b.y);
+          if (dist(res, a) < 10 || dist(res, b) < 10) continue;
+          const d = dist(pt, res);
+          if (d < bestD) { bestD = d; best = { ...res, wallId: w.id, segIdx: i }; }
+        }
+      }
+      return best;
+    }
+    function snapPoint(raw) {
+      const v = findNearbyVertex(raw);
+      if (v) return { ...v, snapped: 'v' };
+      const s = findNearbyWallSeg(raw);
+      if (s) return { x: s.x, y: s.y, snapped: 'w', data: s };
+      return { x: raw.x, y: raw.y, snapped: false };
+    }
+
+    // --- Drawing state ---
+    let startDot = null, startRing = null;
+    function showStartDot(pt) {
+      hideStartDot();
+      startRing = new Konva.Circle({ x: pt.x, y: pt.y, radius: 7, stroke: 'rgba(129,140,248,0.35)', strokeWidth: 1.5, dash: [3,3], perfectDrawEnabled: false });
+      startDot = new Konva.Circle({ x: pt.x, y: pt.y, radius: 3.5, fill: '#818cf8', perfectDrawEnabled: false });
+      wallLayers.ui.add(startRing); wallLayers.ui.add(startDot); wallLayers.ui.batchDraw();
+    }
+    function hideStartDot() {
+      if (startDot) { startDot.destroy(); startDot = null; }
+      if (startRing) { startRing.destroy(); startRing = null; }
+      wallLayers.ui.batchDraw();
+    }
+
+    function startDrawing(pt) {
+      wallState.drawing = { points: [{ ...pt }], segmentLines: [] };
+      wallLayers.draw.destroyChildren();
+      clearTempLayerK();
+      showStartDot(pt);
+      setWallHint('Click to place · click start to close · <span class="key">Enter</span> finish · <span class="key">Esc</span> cancel');
+    }
+
+    function placeVertex(pt) {
+      if (!wallState.drawing) { startDrawing(pt); return; }
+      const prev = wallState.drawing.points[wallState.drawing.points.length - 1];
+      wallState.drawing.points.push({ ...pt });
+      const seg = new Konva.Line({ points: [prev.x, prev.y, pt.x, pt.y], stroke: 'rgba(255,255,255,0.25)', strokeWidth: 2.5, lineCap: 'round', perfectDrawEnabled: false });
+      wallState.drawing.segmentLines.push(seg);
+      wallLayers.draw.add(seg);
+      wallLayers.draw.batchDraw();
+    }
+
+    function finishDrawing(closed) {
+      if (!wallState.drawing || wallState.drawing.points.length < 2) { cancelDrawing(); return; }
+      const pts = wallState.drawing.points;
+      const clean = [pts[0]];
+      for (let i = 1; i < pts.length; i++) { if (dist(pts[i], pts[i-1]) > 0.5) clean.push(pts[i]); }
+      if (clean.length < 2) { cancelDrawing(); return; }
+
+      wallState.drawing.segmentLines.forEach(l => l.destroy());
+      wallState.drawing = null;
+      wallLayers.draw.destroyChildren();
+      clearTempLayerK();
+      hideStartDot();
+
+      addWall(clean, closed);
+      setWallHint('Wall placed · continue drawing');
+    }
+
+    function cancelDrawing() {
+      if (wallState.drawing) {
+        wallState.drawing.segmentLines.forEach(l => l.destroy());
+        wallState.drawing = null;
+      }
+      wallLayers.draw.destroyChildren();
+      clearTempLayerK();
+      hideStartDot();
+      setWallHint(wallDrawMode ? 'Click to place first point' : '');
+    }
+
+    function clearTempLayerK() { wallLayers.temp.destroyChildren(); wallLayers.temp.batchDraw(); }
+
+    function drawTempLine(from, to, constrained) {
+      clearTempLayerK();
+      const g = new Konva.Group();
+      const isSnap = constrained;
+      const color = isSnap ? '#818cf8' : 'rgba(255,255,255,0.35)';
+      g.add(new Konva.Line({
+        points: [from.x, from.y, to.x, to.y], stroke: color,
+        strokeWidth: 2, dash: isSnap ? [] : [5, 4], lineCap: 'round', perfectDrawEnabled: false,
+      }));
+
+      // Show length label only when NOT constrained
+      if (!constrained && dist(from, to) > 2) {
+        const len = dist(from, to);
+        const lp = perpOffset(from, to, 18);
+        const txt = new Konva.Text({ text: formatLen(len), fontSize: 11, fontFamily: 'monospace', fill: 'rgba(255,255,255,0.8)', align: 'center', perfectDrawEnabled: false });
+        txt.offsetX(txt.width()/2); txt.offsetY(txt.height()/2);
+        const pad = 3;
+        g.add(new Konva.Rect({ x: lp.x - txt.width()/2 - pad, y: lp.y - txt.height()/2 - pad, width: txt.width() + pad*2, height: txt.height() + pad*2, fill: 'rgba(0,0,0,0.55)', cornerRadius: 3, perfectDrawEnabled: false }));
+        g.add(txt);
+      }
+
+      if (isSnap) {
+        g.add(new Konva.Circle({ x: to.x, y: to.y, radius: 5, stroke: '#818cf8', strokeWidth: 1.5, fill: 'rgba(129,140,248,0.1)', perfectDrawEnabled: false }));
+      }
+      wallLayers.temp.add(g);
+      wallLayers.temp.batchDraw();
+    }
+
+    function getKonvaPointer() {
+      const p = wallStage.getPointerPosition();
+      return p ? { x: p.x, y: p.y } : { x: 0, y: 0 };
+    }
+
+    // --- Konva events ---
+    function bindKonvaEvents() {
+      wallStage.on('click', (e) => {
+        if (!wallMode || !wallDrawMode) return;
+        if (e.evt.button !== 0) return;
+        const raw = getKonvaPointer();
+        const snapped = snapPoint(raw);
+
+        // Click on start vertex → close
+        if (wallState.drawing && wallState.drawing.points.length >= 2) {
+          const start = wallState.drawing.points[0];
+          if ((snapped.snapped === 'v' && dist(snapped, start) < 12) || dist(raw, start) < 12) {
+            finishDrawing(true); return;
+          }
+        }
+
+        // Handle wall split
+        let effPt = snapped;
+        if (snapped.snapped === 'w' && snapped.data) {
+          const w = wallState.walls.find(x => x.id === snapped.data.wallId);
+          if (w) {
+            const np = splitWallAtPoint(w, snapped);
+            if (np) effPt = { x: np.x, y: np.y, snapped: 'w', data: null };
+            else { const v = findNearbyVertex(snapped); if (v) effPt = { ...v, snapped: 'v', data: null }; }
+          }
+        }
+
+        // Drawing + wall click → finish & connect
+        if (wallState.drawing && wallState.drawing.points.length >= 1 && effPt.snapped === 'w') {
+          placeVertex(effPt); finishDrawing(false); return;
+        }
+
+        placeVertex(effPt);
+      });
+
+      wallStage.on('mousemove', () => {
+        if (!wallMode || !wallDrawMode) return;
+        const raw = getKonvaPointer();
+        const snapped = snapPoint(raw);
+        let target = snapped;
+
+        // Ctrl constraint
+        if (ctrlHeld && wallState.drawing) {
+          const last = wallState.drawing.points[wallState.drawing.points.length - 1];
+          target = constrainAngle(last, target);
+        }
+
+        if (wallState.drawing) {
+          const last = wallState.drawing.points[wallState.drawing.points.length - 1];
+          drawTempLine(last, target, ctrlHeld);
+        }
+      });
+    }
+
+    // --- Wall mode toggle ---
+    const wallModeBtn = document.getElementById('btn-wall-mode');
+    const wallSub = document.getElementById('wall-sub');
+    const wallHint = document.getElementById('wall-hint');
+    const wallDrawBtn = document.getElementById('btn-wall-draw');
+    const wallClearBtn = document.getElementById('btn-wall-clear');
+    const wallStatus = document.getElementById('wall-status');
+
+    function setWallHint(text) {
+      wallHint.innerHTML = text;
+    }
+
+    wallModeBtn.addEventListener('click', () => {
+      if (!wallMode && !konvaInited) {
+        wallStatus.textContent = 'Map still loading…';
+        wallStatus.classList.add('show');
+        return;
+      }
+      wallMode = !wallMode;
+      wallModeBtn.style.background = wallMode ? '#2563eb' : '';
+      wallModeBtn.style.borderColor = wallMode ? '#3b82f6' : '';
+      wallSub.classList.toggle('show', wallMode);
+      wallStatus.classList.toggle('show', wallMode);
+      konvaContainer.classList.toggle('active', wallMode);
+
+      if (wallMode) {
+        wallStatus.textContent = 'Wall mode — camera drag disabled';
+        setWallHint('Click Draw to start');
+        container.style.cursor = 'default';
+      } else {
+        cancelDrawing();
+        wallDrawMode = false;
+        wallDrawBtn.classList.remove('active');
+        wallStatus.textContent = '';
+        setWallHint('');
+        container.style.cursor = 'grab';
+      }
+    });
+
+    wallDrawBtn.addEventListener('click', () => {
+      if (!wallMode) return;
+      cancelDrawing();
+      wallDrawMode = !wallDrawMode;
+      wallDrawBtn.classList.toggle('active', wallDrawMode);
+      if (wallDrawMode) {
+        setWallHint('Click to place first wall point');
+      } else {
+        setWallHint('');
+        clearTempLayerK();
+      }
+    });
+
+    wallClearBtn.addEventListener('click', () => {
+      if (!wallMode) return;
+      if (!confirm('Clear all walls?')) return;
+      cancelDrawing();
+      wallState.walls.forEach(w => { w.line.destroy(); w.dots.forEach(d => d.destroy()); });
+      wallState.walls = [];
+      wallLayers.wall.destroyChildren();
+      wallLayers.wall.batchDraw();
+      wallState.wallsDirty = true;
+      setWallHint('All walls cleared');
+    });
+
+    // --- Ctrl key tracking ---
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Control') { ctrlHeld = true; }
+      if (wallMode && wallDrawMode) {
+        if (e.key === 'Escape') { if (wallState.drawing) { cancelDrawing(); } else { wallDrawBtn.click(); } e.preventDefault(); }
+        if (e.key === 'Enter') { if (wallState.drawing && wallState.drawing.points.length >= 2) { finishDrawing(false); e.preventDefault(); } }
+        if (e.key === 'Backspace') {
+          if (wallState.drawing) {
+            if (wallState.drawing.points.length > 1) {
+              const seg = wallState.drawing.segmentLines.pop();
+              if (seg) seg.destroy();
+              wallState.drawing.points.pop();
+              wallLayers.draw.batchDraw();
+              const raw = getKonvaPointer();
+              const snapped = snapPoint(raw);
+              const last = wallState.drawing.points[wallState.drawing.points.length - 1];
+              drawTempLine(last, ctrlHeld ? constrainAngle(last, snapped) : snapped, ctrlHeld);
+            } else { cancelDrawing(); }
+            e.preventDefault();
+          }
+        }
+      }
+    });
+    document.addEventListener('keyup', (e) => {
+      if (e.key === 'Control') { ctrlHeld = false; }
+    });
+
+    function loadInitialWalls() {
+      if (initialWalls && initialWalls.length > 0) {
+        initialWalls.forEach(w => addWall(w.points, w.closed));
+      }
+    }
 
     // --- Init ---
     cameras = JSON.parse(JSON.stringify(initialCameras));
@@ -509,13 +1004,22 @@
       applyTransform();
     }
 
-    if (mapImage.complete) {
+    function onMapReady() {
       centerMap();
-    } else {
-      mapImage.addEventListener('load', centerMap);
+      initKonva();
+      renderCameras();
     }
 
-    renderCameras();
+    if (mapImage.complete) {
+      onMapReady();
+    } else {
+      mapImage.addEventListener('load', onMapReady);
+    }
+
+    window.addEventListener('resize', () => {
+      resizeKonva();
+      centerMap();
+    });
   </script>
 </body>
 </html>

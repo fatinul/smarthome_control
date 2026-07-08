@@ -10,6 +10,7 @@ const GO2RTC_PORT = process.env.GO2RTC_PORT || 1984;
 const PORT = process.env.PORT || 3000;
 
 const CAMERAS_PATH = path.join(__dirname, 'cameras.json');
+const WALLS_PATH = path.join(__dirname, 'walls.json');
 
 app.set('view engine', 'ejs');
 app.use(express.json());
@@ -25,6 +26,18 @@ function loadCameras() {
 
 function saveCameras(data) {
   fs.writeFileSync(CAMERAS_PATH, JSON.stringify(data, null, 2), 'utf-8');
+}
+
+function loadWalls() {
+  try {
+    return JSON.parse(fs.readFileSync(WALLS_PATH, 'utf-8'));
+  } catch {
+    return [];
+  }
+}
+
+function saveWalls(data) {
+  fs.writeFileSync(WALLS_PATH, JSON.stringify(data, null, 2), 'utf-8');
 }
 
 app.get('/', async (req, res) => {
@@ -46,10 +59,26 @@ app.get('/map', async (req, res) => {
     const { data } = await axios.get(`http://${GO2RTC_HOST}:${GO2RTC_PORT}/api/streams`);
     const streams = Object.keys(data);
     const cameras = loadCameras();
-    res.render('map', { streams, cameras });
+    const walls = loadWalls();
+    res.render('map', { streams, cameras, walls });
   } catch (err) {
     const cameras = loadCameras();
-    res.render('map', { streams: [], cameras, error: 'Could not connect to go2rtc: ' + err.message });
+    const walls = loadWalls();
+    res.render('map', { streams: [], cameras, walls, error: 'Could not connect to go2rtc: ' + err.message });
+  }
+});
+
+app.get('/map-v2', async (req, res) => {
+  try {
+    const { data } = await axios.get(`http://${GO2RTC_HOST}:${GO2RTC_PORT}/api/streams`);
+    const streams = Object.keys(data);
+    const cameras = loadCameras();
+    const walls = loadWalls();
+    res.render('map-v2', { streams, cameras, walls });
+  } catch (err) {
+    const cameras = loadCameras();
+    const walls = loadWalls();
+    res.render('map-v2', { streams: [], cameras, walls, error: 'Could not connect to go2rtc: ' + err.message });
   }
 });
 
@@ -59,6 +88,15 @@ app.get('/api/cameras', (req, res) => {
 
 app.post('/api/cameras', (req, res) => {
   saveCameras(req.body);
+  res.json({ ok: true });
+});
+
+app.get('/api/walls', (req, res) => {
+  res.json(loadWalls());
+});
+
+app.post('/api/walls', (req, res) => {
+  saveWalls(req.body);
   res.json({ ok: true });
 });
 
