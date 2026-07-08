@@ -363,11 +363,11 @@
     }
 
     // ─── Wall CRUD ──────────────────────────────────────────────────────
-    function createWallLine(points, closed) {
+    function createWallLine(p1, p2) {
       const line = new Konva.Line({
-        points: points.flatMap(p => [p.x, p.y]),
+        points: [p1.x, p1.y, p2.x, p2.y],
         stroke: '#e2e2ec', strokeWidth: 2.5,
-        hitStrokeWidth: 12, closed,
+        hitStrokeWidth: 12,
         lineCap: 'round', lineJoin: 'round',
         perfectDrawEnabled: false,
       });
@@ -376,11 +376,14 @@
       return line;
     }
 
-    function addWall(points, closed) {
+    function addWall(p1, p2) {
       const id = 'w' + (wallState.idCounter++);
-      const line = createWallLine(points, closed);
-      const dots = points.map(p => new Konva.Circle({ x: p.x, y: p.y, radius: 2, fill: 'rgba(255,255,255,0.2)', perfectDrawEnabled: false }));
-      const wall = { id, points: points.map(p => ({ ...p })), closed, line, dots };
+      const line = createWallLine(p1, p2);
+      const dots = [
+        new Konva.Circle({ x: p1.x, y: p1.y, radius: 2, fill: 'rgba(255,255,255,0.2)', perfectDrawEnabled: false }),
+        new Konva.Circle({ x: p2.x, y: p2.y, radius: 2, fill: 'rgba(255,255,255,0.2)', perfectDrawEnabled: false }),
+      ];
+      const wall = { id, points: [{ ...p1 }, { ...p2 }], line, dots };
       wallState.walls.push(wall);
       layers.wall.add(line);
       dots.forEach(d => layers.wall.add(d));
@@ -390,25 +393,19 @@
     }
 
     function splitWallAtPoint(wall, pt) {
-      const pts = wall.points, len = wall.closed ? pts.length : pts.length - 1;
-      let bestIdx = -1, bestD = Infinity;
-      for (let i = 0; i < len; i++) {
-        const a = pts[i], b = pts[(i + 1) % pts.length];
-        const r = closestOnSegment(pt.x, pt.y, a.x, a.y, b.x, b.y);
-        const d = dist(pt, r);
-        if (d < bestD) { bestD = d; bestIdx = i; }
-      }
-      if (bestIdx === -1 || bestD > 8) return null;
-      const a = pts[bestIdx], b = pts[(bestIdx + 1) % pts.length];
+      const a = wall.points[0], b = wall.points[1];
       const r = closestOnSegment(pt.x, pt.y, a.x, a.y, b.x, b.y);
       if (dist(r, a) < 10 || dist(r, b) < 10) return null;
+      if (dist(pt, r) > 8) return null;
       const np = { x: r.x, y: r.y };
-      pts.splice(bestIdx + 1, 0, np);
-      wall.line.points(pts.flatMap(p => [p.x, p.y]));
+      wall.line.destroy();
       wall.dots.forEach(d => d.destroy());
-      wall.dots = pts.map(p => new Konva.Circle({ x: p.x, y: p.y, radius: 2, fill: 'rgba(255,255,255,0.2)', perfectDrawEnabled: false }));
-      wall.dots.forEach(d => layers.wall.add(d));
+      const idx = wallState.walls.indexOf(wall);
+      if (idx !== -1) wallState.walls.splice(idx, 1);
+      addWall(a, np);
+      addWall(np, b);
       layers.wall.batchDraw();
+      updateInfo();
       return np;
     }
 
@@ -421,14 +418,11 @@
     function findNearbyWallSeg(pt) {
       let best = null, bestD = 8;
       for (const w of wallState.walls) {
-        const pts = w.points, len = w.closed ? pts.length : pts.length - 1;
-        for (let i = 0; i < len; i++) {
-          const a = pts[i], b = pts[(i + 1) % pts.length];
-          const r = closestOnSegment(pt.x, pt.y, a.x, a.y, b.x, b.y);
-          if (dist(r, a) < 10 || dist(r, b) < 10) continue;
-          const d = dist(pt, r);
-          if (d < bestD) { bestD = d; best = { ...r, wallId: w.id, segIdx: i }; }
-        }
+        const a = w.points[0], b = w.points[1];
+        const r = closestOnSegment(pt.x, pt.y, a.x, a.y, b.x, b.y);
+        if (dist(r, a) < 10 || dist(r, b) < 10) continue;
+        const d = dist(pt, r);
+        if (d < bestD) { bestD = d; best = { ...r, wallId: w.id }; }
       }
       return best;
     }
@@ -480,8 +474,11 @@
       layers.draw.destroyChildren();
       clearTemp();
       hideStartDot();
-      addWall(clean, closed);
-      setStatus('Wall placed');
+      const count = closed ? clean.length : clean.length - 1;
+      for (let i = 0; i < count; i++) {
+        addWall(clean[i], clean[(i + 1) % clean.length]);
+      }
+      setStatus(count + ' wall segments placed');
     }
     function cancelDrawing() {
       if (wallState.drawing) { wallState.drawing.segmentLines.forEach(l => l.destroy()); wallState.drawing = null; }
@@ -809,7 +806,7 @@
           body: JSON.stringify(cameras),
         });
         if (!r1.ok) throw new Error('Camera save failed');
-        const wallData = wallState.walls.map(w => ({ id: w.id, points: w.points, closed: w.closed }));
+        const wallData = wallState.walls.map(w => ({ id: w.id, points: w.points }));
         const r2 = await fetch('/api/walls', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(wallData),
@@ -839,7 +836,15 @@
     // ─── Load initial data ──────────────────────────────────────────────
     function loadWalls() {
       if (initialWalls && initialWalls.length > 0) {
-        initialWalls.forEach(w => addWall(w.points, w.closed));
+        initialWalls.forEach(w => {
+          if (w.points.length === 2) {
+            addWall(w.points[0], w.points[1]);
+          } else {
+            for (let i = 0; i < (w.closed ? w.points.length : w.points.length - 1); i++) {
+              addWall(w.points[i], w.points[(i + 1) % w.points.length]);
+            }
+          }
+        });
       }
     }
 
