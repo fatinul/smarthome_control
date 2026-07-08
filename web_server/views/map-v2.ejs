@@ -220,6 +220,12 @@
 
   <!-- Bottom pill toolbar -->
   <div id="bottom-pill">
+    <button class="pill-btn" data-tool="select"><span>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:block;vertical-align:middle">
+        <path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/>
+      </svg>
+    </span> Select</button>
+    <div class="pill-divider"></div>
     <button class="pill-btn" data-tool="wall"><span>▤</span> Wall</button>
     <div class="pill-divider"></div>
     <button class="pill-btn" data-tool="camera"><span>⊙</span> Camera</button>
@@ -266,6 +272,8 @@
     let activeTool = null;       // 'wall' | 'camera' | null
     let selectedStream = null;   // stream name for camera placement
     let ctrlHeld = false;
+    let transformer = null;
+    let selectedNode = null;
 
     // Wall state
     const wallState = {
@@ -289,6 +297,7 @@
     }
 
     function deleteWall(wall) {
+      if (selectedNode === wall.line) deselectNode();
       wall.line.destroy();
       wall.dots.forEach(d => d.destroy());
       const idx = wallState.walls.indexOf(wall);
@@ -313,6 +322,67 @@
 
       stage.position({ x: panX, y: panY });
       stage.scale({ x: scale, y: scale });
+
+      transformer = new Konva.Transformer({
+        rotateEnabled: true,
+        resizeEnabled: true,
+        keepRatio: false,
+        borderStroke: '#a5b4fc',
+        borderStrokeWidth: 2,
+        anchorStroke: '#a5b4fc',
+        anchorFill: '#1a1a2e',
+        anchorSize: 10,
+        padding: 5,
+        boundBoxFunc: (oldBox, newBox) => {
+          if (newBox.width < 10 || newBox.height < 10) return oldBox;
+          return newBox;
+        },
+      });
+      transformer.on('transformend', () => {
+        if (!selectedNode) return;
+        const dt = selectedNode.getAttr('dataType');
+        if (dt === 'wall') {
+          const line = selectedNode;
+          const pts = line.points();
+          const sx = line.scaleX(), sy = line.scaleY();
+          const rot = line.rotation();
+          const px = line.x(), py = line.y();
+          const ox = line.offsetX(), oy = line.offsetY();
+          const cos = Math.cos(rot), sin = Math.sin(rot);
+          const newPts = [];
+          for (let i = 0; i < pts.length; i += 2) {
+            const dx = pts[i] - ox, dy = pts[i + 1] - oy;
+            newPts.push(dx * cos * sx - dy * sin * sy + ox + px);
+            newPts.push(dx * sin * sx + dy * cos * sy + oy + py);
+          }
+          line.scaleX(1); line.scaleY(1); line.rotation(0);
+          line.offsetX(0); line.offsetY(0); line.x(0); line.y(0);
+          line.points(newPts);
+          const wall = wallState.walls.find(w => w.line === line);
+          if (wall) {
+            wall.points = [{ x: newPts[0], y: newPts[1] }, { x: newPts[2], y: newPts[3] }];
+            wall.dots[0].position({ x: newPts[0], y: newPts[1] });
+            wall.dots[1].position({ x: newPts[2], y: newPts[3] });
+          }
+          layers.wall.batchDraw();
+        } else if (dt === 'camera') {
+          const label = selectedNode.find('Text')[0];
+          if (label) {
+            const stream = label.text();
+            if (stream && stream in cameras) {
+              cameras[stream] = {
+                x: selectedNode.x(),
+                y: selectedNode.y(),
+                scaleX: selectedNode.scaleX(),
+                scaleY: selectedNode.scaleY(),
+                rotation: selectedNode.rotation(),
+              };
+              saveStatus.textContent = 'unsaved changes';
+            }
+          }
+        }
+      });
+      layers.ui.add(transformer);
 
       drawGrid();
       loadWalls();
@@ -543,9 +613,17 @@
     let previewStream = '';
 
     function renderCameras() {
+      deselectNode();
       layers.camera.destroyChildren();
       for (const [stream, pos] of Object.entries(cameras)) {
-        const g = new Konva.Group({ x: pos.x, y: pos.y, draggable: true });
+        const g = new Konva.Group({
+          x: pos.x, y: pos.y, draggable: true,
+          scaleX: pos.scaleX !== undefined ? pos.scaleX : 1,
+          scaleY: pos.scaleY !== undefined ? pos.scaleY : 1,
+          rotation: pos.rotation !== undefined ? pos.rotation : 0,
+        });
+        g.setAttr('dataType', 'camera');
+        g.name('camera-group');
         const bg = new Konva.Circle({ radius: 16, fill: 'rgba(0,0,0,0.4)', stroke: 'rgba(34,197,94,0.5)', strokeWidth: 1.5, perfectDrawEnabled: false });
         const icon = new Konva.Path({
           data: 'M20 7l-6 4 6 4V7z M4 5h12v14H4z',
@@ -567,11 +645,16 @@
         g.on('mouseleave', () => { clearTimeout(previewTimer); previewTimer = setTimeout(hidePreview, 200); });
         g.on('dragmove', () => { if (previewStream === stream) positionPreview(g); });
         g.on('dragend', () => {
-          cameras[stream] = { x: g.x(), y: g.y() };
+          cameras[stream] = {
+            x: g.x(), y: g.y(),
+            scaleX: g.scaleX(), scaleY: g.scaleY(),
+            rotation: g.rotation(),
+          };
           saveStatus.textContent = 'unsaved changes';
         });
         g.on('dblclick dbltap', () => {
           if (confirm('Remove camera ' + stream + '?')) {
+            deselectNode();
             delete cameras[stream];
             renderCameras();
             saveStatus.textContent = 'unsaved changes';
@@ -585,11 +668,10 @@
     }
 
     function placeCamera(stream, pos) {
-      if (stream in cameras) {
-        cameras[stream] = { x: pos.x, y: pos.y };
-      } else {
-        cameras[stream] = { x: pos.x, y: pos.y };
-      }
+      cameras[stream] = {
+        x: pos.x, y: pos.y,
+        scaleX: 1, scaleY: 1, rotation: 0,
+      };
       renderCameras();
       saveStatus.textContent = 'unsaved changes';
     }
@@ -659,6 +741,14 @@
             if (wallState.drawing.points.length >= 2 && dist(effPt, wallState.drawing.points[0]) < 12) { finishDrawing(true); return; }
           }
           placeVertex(effPt);
+        } else if (activeTool === 'select') {
+          let node = e.target;
+          while (node && node !== stage) {
+            const dt = node.getAttr('dataType');
+            if (dt === 'camera' || dt === 'wall') { selectNode(node); return; }
+            node = node.parent;
+          }
+          deselectNode();
         } else if (activeTool === 'camera') {
           if (!selectedStream) {
             setStatus('Select a camera stream from the list first');
@@ -699,9 +789,14 @@
           return;
         }
         if (e.evt.button === 2) {
-          if (activeTool === 'wall' && wallState.drawing) { cancelDrawing(); e.evt.preventDefault(); return; }
-          rectStart = getWorldPos(e.evt);
-          deleteDragging = true;
+          if (activeTool === 'wall') {
+            if (wallState.drawing) { cancelDrawing(); e.evt.preventDefault(); return; }
+            rectStart = getWorldPos(e.evt);
+            deleteDragging = true;
+            return;
+          }
+          if (activeTool === 'select') deselectNode();
+          e.evt.preventDefault();
           return;
         }
         if (e.evt.button === 1) {
@@ -819,6 +914,21 @@
       statusBar.classList.toggle('show', !!text);
     }
 
+    const selectNode = node => {
+      if (selectedNode) transformer.nodes([]);
+      selectedNode = node;
+      transformer.nodes([node]);
+      layers.ui.batchDraw();
+    };
+
+    const deselectNode = () => {
+      if (selectedNode) {
+        transformer.nodes([]);
+        selectedNode = null;
+        layers.ui.batchDraw();
+      }
+    };
+
     function updateInfo() {
       const wc = wallState.walls.length;
       const cc = Object.keys(cameras).length;
@@ -850,22 +960,29 @@
           activeTool = null;
           pillBtns.forEach(b => b.classList.remove('active'));
           cancelDrawing();
+          deselectNode();
           setStatus('');
           streamSelector.classList.remove('show');
           selectedStream = null;
           mapArea.style.cursor = 'default';
         } else {
+          deselectNode();
+          cancelDrawing();
           activeTool = tool;
           pillBtns.forEach(b => b.classList.remove('active'));
           btn.classList.add('active');
 
-          if (tool === 'wall') {
+          if (tool === 'select') {
+            streamSelector.classList.remove('show');
+            selectedStream = null;
+            setStatus('Click a camera or wall to select and transform · <span class="key">Esc</span> exit');
+            mapArea.style.cursor = 'default';
+          } else if (tool === 'wall') {
             streamSelector.classList.remove('show');
             selectedStream = null;
             setStatus('<span class="key">Drag</span> to create rectangle · <span class="key">Right-click</span> wall to delete · click to draw · <span class="key">Esc</span> exit');
             mapArea.style.cursor = 'crosshair';
           } else if (tool === 'camera') {
-            cancelDrawing();
             streamSelector.classList.add('show');
             updateStreamSelector();
             setStatus('Select a camera stream, then click on map to place');
@@ -896,7 +1013,16 @@
           }
         }
       }
+      if (activeTool === 'select' && e.key === 'Escape') {
+        deselectNode();
+        activeTool = null;
+        pillBtns.forEach(b => b.classList.remove('active'));
+        setStatus('');
+        mapArea.style.cursor = 'default';
+        e.preventDefault();
+      }
       if (activeTool === 'camera' && e.key === 'Escape') {
+        deselectNode();
         activeTool = null;
         pillBtns.forEach(b => b.classList.remove('active'));
         streamSelector.classList.remove('show');
